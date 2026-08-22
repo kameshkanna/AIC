@@ -16,6 +16,9 @@
 #             Co-residing it with the 7B leaves only 15.7 GiB of KV and drops
 #             concurrency to about 8, so it gets the card to itself.
 #
+# `--swap-space` is deliberately absent: it was a v0-engine argument and vLLM 0.27
+# rejects it outright. The V1 engine handles CPU offload on its own.
+#
 # Prefix caching is enabled everywhere. The monitor prompt is ordered
 # [system][index<t][fetched][incoming], so the index is a growing shared prefix
 # and caching turns per-step prefill from linear in t into constant.
@@ -31,7 +34,6 @@ set -euo pipefail
 IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:latest}"
 HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 MAX_LEN="${MAX_MODEL_LEN:-16384}"
-SWAP_GIB="${SWAP_SPACE:-32}"
 WAIT_SECONDS="${WAIT_SECONDS:-1800}"
 LOG_DIR="${LOG_DIR:-logs/serve}"
 
@@ -103,7 +105,6 @@ start_local() {
     --enable-prefix-caching \
     --max-model-len "$MAX_LEN" \
     --gpu-memory-utilization "$util" \
-    --swap-space "$SWAP_GIB" \
     >"$(logfile "$name")" 2>&1 &
   echo $! > "$(pidfile "$name")"
 }
@@ -122,7 +123,7 @@ start_docker() {
     "$IMAGE" \
     --model "$model" --served-model-name "$model" \
     --enable-prefix-caching --max-model-len "$MAX_LEN" \
-    --gpu-memory-utilization "$util" --swap-space "$SWAP_GIB" >/dev/null
+    --gpu-memory-utilization "$util" >/dev/null
 }
 
 start_model() {

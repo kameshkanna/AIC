@@ -54,7 +54,7 @@ on your own corpus.
 
 Do **not** put a whole model on the Grace CPU. Decode there is bandwidth-bound at
 ~150 tok/s and prefill compute-bound at ~2 TFLOPS, turning 0.5 GPU-hours of 7B work into
-roughly 48 CPU-hours. The 432 GiB of RAM is useful as `--swap-space` and page cache, not
+roughly 48 CPU-hours. The 432 GiB of RAM is useful as page cache, not
 as a second inference device.
 
 ## Getting the data
