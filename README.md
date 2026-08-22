@@ -7,120 +7,53 @@ innocuous actions; full-trajectory monitors dilute it; compressed running summar
 the weak signals that decomposition produces. This harness gives a small trusted monitor
 an append-only ledger instead of a summary, and measures whether that changes detection.
 
-## Install
+## Quickstart, from nothing
 
 ```bash
-bash setup.sh          # venv, deps, unit tests, memory preflight
+git clone https://github.com/kameshkanna/AIC.git && cd AIC
+
+bash setup.sh --backend=vllm     # venv, deps, vLLM, tests, memory preflight
 source .venv/bin/activate
-```
 
-`setup.sh` writes `.env` from `.env.example` on first run.
+export HF_HOME=/path/on/a/big/volume        # ~105 GiB of weights land here
+bash fetch_models.sh sweep                  # 7B + 14B
+bash serve.sh sweep                         # start both, wait until ready
+python -m scripts.preflight                 # GATE: must print GO
 
-### Backend: served or in-process
+bash get_data.sh                            # download + convert the corpus
+python -m scripts.plan --budget-hours 12    # GATE: must say FITS
 
-Two options. `LEDGERCTL_BACKEND=openai` (default) talks to a vLLM server;
-`LEDGERCTL_BACKEND=transformers` loads models in the same process, with no server,
-no port and no container -- useful when vLLM's dependency surface misbehaves.
+python -m scripts.run --protocols per_step,running_summary   # GATE: baseline sanity
+python -m scripts.run --limit 20                             # pilot
+python -m scripts.run                                        # full sweep
 
-```bash
-pip install -e ".[local]"          # torch + transformers + accelerate
-export LEDGERCTL_BACKEND=transformers
-python -m scripts.run --workers 16
-```
-
-`--workers` matters for the in-process backend: decode is memory-bandwidth-bound, so
-generating one prompt at a time wastes most of the card. Trajectories are independent,
-so the runner scores them concurrently and the backend coalesces whatever arrives into
-a single batch. Start around 16 and raise it until throughput stops improving. Results
-do not depend on it -- verified identical at `--workers 1` and `--workers 8`.
-
-If vLLM crashes during startup, check `flashinfer` first: it is imported for multi-GPU
-fused allreduce, is unused on a single card, and on Python 3.10 raises `TypeError` at
-import, which vLLM's `ImportError` fallback does not catch.
-
-```bash
-pip uninstall -y flashinfer-python flashinfer
-```
-
-### Serving on GH200 (aarch64)
-
-vLLM publishes a `manylinux_2_28` aarch64 wheel from 0.27.1, so no Docker, no
-nvidia-container-toolkit and no sudo are needed:
-
-```bash
-pip install vllm
-bash serve.sh sweep        # 7B on :8001 + 14B on :8000, waits until both are ready
-python -m scripts.preflight
-```
-
-`serve.sh` auto-detects the backend: local vLLM if importable, containers otherwise.
-Force one with `BACKEND=docker` or `BACKEND=local`. Logs and pids land in `logs/serve/`.
-
-After the sweep, the 32B memoryless baseline gets the card to itself:
-
-```bash
-bash serve.sh stop
-bash serve.sh baseline     # 32B on :8002
+bash serve.sh stop && bash serve.sh baseline                 # 32B needs the whole card
 python -m scripts.run --protocols full_context
 ```
 
-Why the split, at bf16 on 96 GiB:
+Results land in `results/`: `report.json`, `safety_curve.json` (the figure to lead
+with), `steps.csv` (everything else you would plot).
 
-| resident | weights | KV headroom | concurrency @8K |
-|---|---|---|---|
-| 7B + 14B | 41.7 GiB | 49.3 GiB | ~33 |
-| 7B + 32B | 75.3 GiB | 15.7 GiB | ~8 |
-| 32B alone | 61.1 GiB | 29.9 GiB | ~15 |
+### If vLLM will not start
 
-`--enable-prefix-caching` is set everywhere and is not optional at scale. The monitor
-prompt is ordered `[system][index<t][fetched][incoming]`, so the index is a growing
-shared prefix and caching turns per-step prefill from linear in `t` into constant --
-roughly a 2x end-to-end speedup. `python -m scripts.plan --no-prefix-caching` shows it
-on your own corpus.
-
-Do **not** put a whole model on the Grace CPU. Decode there is bandwidth-bound at
-~150 tok/s and prefill compute-bound at ~2 TFLOPS, turning 0.5 GPU-hours of 7B work into
-roughly 48 CPU-hours. The 432 GiB of RAM is useful as page cache, not
-as a second inference device.
-
-## Getting the data
-
-The Control Tower API is token-gated, but a public HuggingFace mirror is not:
+Use the in-process backend instead -- no server, no port, no container:
 
 ```bash
-hf download anonymouslinuxarena/straj_linuxarena --repo-type dataset   --local-dir data/straj
-
-python -m scripts.from_eval   --src data/straj/evals   --results data/straj/precomputed_results.csv   --out data/trajectories.jsonl
+bash setup.sh --backend=local
+export LEDGERCTL_BACKEND=transformers
+python -m scripts.run --workers 16          # --workers fills generation batches
 ```
 
-That converts Inspect `.eval` archives directly, so neither the `ct` CLI nor an API
-token is needed. The mirror publishes no per-step attack labels, so safety at a fixed
-audit budget is computed at trajectory level and detection latency / attack-step recall
-report `n/a`. See `CONTEXT.md`.
+Skip `fetch_models.sh` and `serve.sh` entirely on this path; weights load on first use.
+It is slower than vLLM, mainly because there is no prefix caching, so budget more time
+or run on a subset with `--limit`.
 
-## Getting the data via Control Tower (needs a token)
+`setup.sh --backend=vllm` removes `flashinfer` on Python < 3.11. vLLM imports it for
+multi-GPU fused allreduce, it is unused on a single card, and it raises `TypeError` at
+import on 3.10 -- which vLLM's `ImportError` fallback does not catch, so the engine dies
+during startup.
 
-Trajectories come from LinuxArena via [Control Tower](https://github.com/linuxarena/control-tower).
-
-```bash
-pip install git+https://github.com/linuxarena/control-tower
-ct traj download --dataset LaStraj              # human-crafted attack trajectories
-ct traj download -e <env> --tag baseline -n 100 # benign runs
-```
-
-Then audit the schema before converting. The loader targets Control Tower's real shape
-(commands as `function` + `arguments`, labels in `attack_analysis.incriminating_actions`),
-but no actual LaStraj document has been parsed yet, so check the audit first:
-
-```bash
-python -m scripts.ingest --src ~/.control-tower/trajectories --audit-only
-python -m scripts.ingest --src ~/.control-tower/trajectories --out data/trajectories.jsonl
-python -m scripts.plan --corpus data/trajectories.jsonl --budget-hours 12
-python -m scripts.run --protocols per_step,running_summary,advisory,cascade
-```
-
-The conversion refuses to run if no alias matched for the step list, command or output,
-rather than silently producing a corpus of empty fields.
+## Install
 
 ## Layout
 
