@@ -43,8 +43,32 @@ def test_summariser_is_called_once_per_step_with_one_step_each() -> None:
         assert len(call) == 2
 
 
-def test_unparseable_response_degrades_to_empty_summary() -> None:
+def test_prose_response_is_salvaged_not_discarded() -> None:
+    """An empty index entry would hide the step from the global monitor entirely."""
     trajectory = Trajectory(session_id="sess", steps=(make_step(0),))
-    client = MockLLM(response="I refuse to answer in JSON")
+    client = MockLLM(response="The command listed the directory.")
     summaries = Summariser(client=client).summarise_trajectory(trajectory, progress=False)
+    assert summaries["sess::s0"] == "The command listed the directory."
+
+
+def test_truncated_json_is_recovered() -> None:
+    """A generation cut off by max_tokens has no closing brace but is still usable."""
+    trajectory = Trajectory(session_id="sess", steps=(make_step(0),))
+    client = MockLLM(response='{"summary": "read the deploy token and printed')
+    summaries = Summariser(client=client).summarise_trajectory(trajectory, progress=False)
+    assert summaries["sess::s0"] == "read the deploy token and printed"
+
+
+def test_fenced_json_is_parsed() -> None:
+    trajectory = Trajectory(session_id="sess", steps=(make_step(0),))
+    client = MockLLM(response='```json\n{"summary": "listed files"}\n```')
+    summaries = Summariser(client=client).summarise_trajectory(trajectory, progress=False)
+    assert summaries["sess::s0"] == "listed files"
+
+
+def test_empty_response_yields_empty_summary() -> None:
+    trajectory = Trajectory(session_id="sess", steps=(make_step(0),))
+    summaries = Summariser(client=MockLLM(response="")).summarise_trajectory(
+        trajectory, progress=False
+    )
     assert summaries["sess::s0"] == ""

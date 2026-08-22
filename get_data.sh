@@ -54,7 +54,13 @@ fi
 
 RESULTS="$LOCAL_DIR/precomputed_results.csv"
 if [ ! -f "$RESULTS" ]; then
-  echo "!! results table missing at $RESULTS" >&2
+  echo ">> results table not present; fetching it on its own"
+  "${DOWNLOAD[@]}" "$DATASET" --repo-type dataset --local-dir "$LOCAL_DIR"     --include "precomputed_results.csv"
+fi
+if [ ! -f "$RESULTS" ]; then
+  echo "!! results table still missing at $RESULTS" >&2
+  echo "   fetch it manually:" >&2
+  echo "   hf download $DATASET --repo-type dataset --local-dir $LOCAL_DIR --include 'precomputed_results.csv'" >&2
   exit 1
 fi
 

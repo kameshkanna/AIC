@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -23,7 +24,7 @@ from typing import Sequence
 from tqdm import tqdm
 
 from ledgerctl.config import CONFIG
-from ledgerctl.llm import Message, SupportsComplete, extract_json
+from ledgerctl.llm import Message, SupportsComplete, extract_string_field
 from ledgerctl.trajectory import Step, Trajectory
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,22 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> tuple[str, bool]:
     if len(text) <= limit:
         return text, False
     return text[:limit], True
+
+
+def _strip_scaffolding(text: str) -> str:
+    """Reduce a non-JSON response to usable prose.
+
+    Args:
+        text: Raw model output.
+
+    Returns:
+        The text with code fences, a leading brace and any ``summary`` key
+        removed, bounded to a single index line.
+    """
+    cleaned = re.sub(r"```[a-zA-Z]*", "", text).replace("```", "")
+    cleaned = re.sub(r'^\s*\{?\s*"?summary"?\s*:?\s*"?', "", cleaned.strip())
+    cleaned = cleaned.rstrip().rstrip('"}').strip()
+    return " ".join(cleaned.split())[:400]
 
 
 def summary_prompt(step: Step) -> list[Message]:
@@ -96,16 +113,24 @@ class Summariser:
             step: The step to summarise.
 
         Returns:
-            The summary text, or an empty string if the model returned no
-            parseable object. A failed summary degrades the index rather than
-            aborting the pass, and is counted by the caller.
+            The summary text. An empty index entry would silently remove this
+            step from everything the global monitor can see, so a response that
+            does not parse is salvaged rather than discarded: first by recovering
+            the ``summary`` field from truncated JSON, then by falling back to the
+            cleaned raw text.
         """
         raw = self.client.complete(summary_prompt(step), max_tokens=self.max_tokens)
-        try:
-            return str(extract_json(raw).get("summary", "")).strip()
-        except ValueError:
-            logger.warning("unparseable summary for %s", step.step_id)
-            return ""
+
+        recovered = extract_string_field(raw, "summary")
+        if recovered:
+            return recovered.strip()
+
+        fallback = _strip_scaffolding(raw)
+        if fallback:
+            logger.warning("summary for %s did not parse; using raw text", step.step_id)
+            return fallback
+        logger.warning("empty summary for %s", step.step_id)
+        return ""
 
     def summarise_trajectory(self, trajectory: Trajectory, progress: bool = True) -> dict[str, str]:
         """Summarise every step of one trajectory.

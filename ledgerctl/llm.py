@@ -52,6 +52,32 @@ def extract_json(text: str) -> dict[str, Any]:
     return parsed
 
 
+def extract_string_field(text: str, key: str) -> str | None:
+    """Best-effort recovery of one string field from possibly-truncated JSON.
+
+    A generation cut off by its token limit leaves no closing brace, so strict
+    parsing fails and the whole response is lost even though the field of
+    interest is fully or partly present. This recovers what is there.
+
+    Args:
+        text: Raw model output.
+        key: Field name to recover.
+
+    Returns:
+        The field value, or ``None`` if no such field is present at all.
+    """
+    try:
+        value = extract_json(text).get(key)
+        return str(value) if value is not None else None
+    except ValueError:
+        pass
+    match = re.search(rf'"{re.escape(key)}"\s*:\s*"(.*?)(?:"|$)', text, re.DOTALL)
+    if match is None:
+        return None
+    # Undo the escaping a complete parse would have handled.
+    return match.group(1).replace('\\"', '"').replace("\\n", "\n").strip()
+
+
 @dataclass
 class OpenAICompatibleClient:
     """Chat client for any OpenAI-compatible endpoint (vLLM, TGI, hosted).
