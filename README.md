@@ -18,26 +18,25 @@ source .venv/bin/activate
 
 ### Serving on GH200 (aarch64)
 
-`bash setup.sh --gpu` refuses on aarch64 by design: vLLM ships x86_64 wheels only, and
-pip would start a multi-hour source build. Models are served by containers instead.
+vLLM publishes a `manylinux_2_28` aarch64 wheel from 0.27.1, so no Docker, no
+nvidia-container-toolkit and no sudo are needed:
 
 ```bash
-bash setup.sh                  # harness, tests, memory preflight
-bash fetch_models.sh           # pre-download weights (~103 GiB) into a shared HF cache
-bash serve.sh sweep            # 7B on :8001 + 14B on :8000, waits until both are ready
-python -m scripts.preflight    # endpoints + JSON adherence -> go/no-go
+pip install vllm
+bash serve.sh sweep        # 7B on :8001 + 14B on :8000, waits until both are ready
+python -m scripts.preflight
 ```
+
+`serve.sh` auto-detects the backend: local vLLM if importable, containers otherwise.
+Force one with `BACKEND=docker` or `BACKEND=local`. Logs and pids land in `logs/serve/`.
 
 After the sweep, the 32B memoryless baseline gets the card to itself:
 
 ```bash
 bash serve.sh stop
-bash serve.sh baseline         # 32B on :8002
+bash serve.sh baseline     # 32B on :8002
 python -m scripts.run --protocols full_context
 ```
-
-`bash serve.sh status` shows containers and GPU memory. Overridable via environment:
-`VLLM_IMAGE`, `HF_HOME`, `MAX_MODEL_LEN`, `SWAP_SPACE`, `WAIT_SECONDS`.
 
 Why the split, at bf16 on 96 GiB:
 
@@ -47,16 +46,16 @@ Why the split, at bf16 on 96 GiB:
 | 7B + 32B | 75.3 GiB | 15.7 GiB | ~8 |
 | 32B alone | 61.1 GiB | 29.9 GiB | ~15 |
 
-`--enable-prefix-caching` is set on every container and is not optional at scale. The
-monitor prompt is ordered `[system][index<t][fetched][incoming]`, so the index is a
-growing shared prefix and caching turns per-step prefill from linear in `t` into
-constant -- roughly a 2x end-to-end speedup. Run
-`python -m scripts.plan --no-prefix-caching` to see it on your own corpus.
+`--enable-prefix-caching` is set everywhere and is not optional at scale. The monitor
+prompt is ordered `[system][index<t][fetched][incoming]`, so the index is a growing
+shared prefix and caching turns per-step prefill from linear in `t` into constant --
+roughly a 2x end-to-end speedup. `python -m scripts.plan --no-prefix-caching` shows it
+on your own corpus.
 
 Do **not** put a whole model on the Grace CPU. Decode there is bandwidth-bound at
-~150 tok/s and prefill is compute-bound at ~2 TFLOPS, turning 0.5 GPU-hours of 7B work
-into roughly 48 CPU-hours. The 432 GiB of RAM is useful as `--swap-space` and page
-cache, not as a second inference device.
+~150 tok/s and prefill compute-bound at ~2 TFLOPS, turning 0.5 GPU-hours of 7B work into
+roughly 48 CPU-hours. The 432 GiB of RAM is useful as `--swap-space` and page cache, not
+as a second inference device.
 
 ## Getting the data
 

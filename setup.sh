@@ -33,24 +33,8 @@ detect_python() {
 for arg in "$@"; do
   case "$arg" in
     --gpu)
-      # vLLM publishes x86_64 wheels only. On aarch64 pip either fails or starts a
-      # very long source build, so this refuses rather than silently burning an hour
-      # of a booked GPU window.
-      if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-        cat >&2 <<'MSG'
---gpu is not supported on aarch64: vLLM ships x86_64 wheels only, and pip would
-start a multi-hour source build.
-
-Serve the models with containers instead:
-
-    bash fetch_models.sh     # pre-download weights into a shared HF cache
-    bash serve.sh sweep      # 7B + 14B co-resident
-    bash serve.sh baseline   # 32B alone, after the sweep
-
-Then re-run this script without --gpu.
-MSG
-        exit 2
-      fi
+      # vLLM publishes a manylinux_2_28 aarch64 wheel (cp38-abi3), so this works
+      # on a GH200 and avoids needing Docker, nvidia-container-toolkit or sudo.
       EXTRAS="gpu,dev"
       ;;
     -h|--help)
@@ -106,7 +90,8 @@ cat <<MSG
 done. activate with:  source $ACTIVATE
 
 next:
-  bash fetch_models.sh          pre-download model weights (~103 GiB)
+  pip install vllm              serve locally, no Docker needed
+  bash fetch_models.sh          pre-download model weights (~105 GiB)
   bash serve.sh sweep           start 7B + 14B
   python -m scripts.preflight   probe endpoints and JSON adherence
 MSG
