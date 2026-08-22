@@ -1,0 +1,12 @@
+# Shell scripts must keep LF endings. A CRLF checkout on Linux fails with
+# "bad interpreter: /usr/bin/env bash^M", which would break serving on the GPU box.
+*.sh text eol=lf
+setup.sh text eol=lf
+serve.sh text eol=lf
+fetch_models.sh text eol=lf
+
+*.py text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.jsonl text eol=lf
+.env.example text eol=lf
