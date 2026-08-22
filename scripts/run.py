@@ -46,6 +46,68 @@ MOCK_STEP = '{"score": 2, "reason": "routine"}'
 MOCK_GLOBAL = '{"score": 3, "reason": "related to an earlier step", "evidence": [], "revise": []}'
 
 
+ROLE_BY_PROTOCOL: dict[str, tuple[str, ...]] = {
+    "per_step": ("step",),
+    "scalar_posterior": ("step",),
+    "running_summary": ("step",),
+    "full_context": ("baseline",),
+    "advisory": ("step", "global"),
+    "cascade": ("step", "global"),
+}
+
+
+def check_local_footprint(names: Sequence[str], gpu_gib: float = 96.0) -> None:
+    """Fail fast when the requested protocols cannot co-reside in memory.
+
+    Only relevant to the in-process backend, where a client is a loaded model.
+    Discovering this by running out of memory partway through costs whatever the
+    summariser pass already spent, so it is checked before any model loads.
+
+    Args:
+        names: Requested protocol names.
+        gpu_gib: Device memory.
+
+    Raises:
+        SystemExit: If the combined weights cannot fit.
+    """
+    if CONFIG.backend != "transformers":
+        return
+    from scripts.preflight import GEOMETRY, RUNTIME_OVERHEAD_GIB
+
+    model_for = {
+        "step": CONFIG.step_monitor_model,
+        "global": CONFIG.global_monitor_model,
+        "baseline": CONFIG.baseline_monitor_model,
+    }
+    roles = {role for name in names for role in ROLE_BY_PROTOCOL.get(name, ())}
+    models = {model_for[role] for role in roles}
+    if not all(m in GEOMETRY for m in models):
+        return
+
+    weights = sum(GEOMETRY[m].weights_gib for m in models)
+    free = gpu_gib - weights - RUNTIME_OVERHEAD_GIB
+    logger.info(
+        "in-process footprint: %s = %.1f GiB, %.1f GiB left for activations and KV",
+        ", ".join(sorted(m.split("/")[-1] for m in models)),
+        weights,
+        free,
+    )
+    if free <= 2.0:
+        names_used = ", ".join(sorted(m.split("/")[-1] for m in models))
+        raise SystemExit(
+            "\n".join(
+                [
+                    f"requested protocols need {weights:.1f} GiB of weights "
+                    f"on a {gpu_gib:.0f} GiB card.",
+                    f"  models: {names_used}",
+                    "  Run them in separate invocations, for example:",
+                    "    python -m scripts.run --protocols per_step,running_summary,advisory,cascade",
+                    "    python -m scripts.run --protocols full_context",
+                ]
+            )
+        )
+
+
 def build_protocols(names: Sequence[str], mock: str) -> list[MonitoringProtocol]:
     """Construct the requested protocols with their clients.
 
@@ -61,58 +123,64 @@ def build_protocols(names: Sequence[str], mock: str) -> list[MonitoringProtocol]
     Raises:
         ValueError: If a name is not recognised.
     """
-    if mock == "keyword":
-        step_client: SupportsComplete = KeywordMockLLM()
-        global_client: SupportsComplete = KeywordMockLLM()
-        baseline_client: SupportsComplete = KeywordMockLLM()
-    else:
-        use_mock = mock == "constant"
-        step_client = get_client(
-            CONFIG.step_monitor_model,
-            mock=use_mock,
-            mock_response=MOCK_STEP,
-            base_url=CONFIG.small_base_url,
-        )
-        global_client = get_client(
-            CONFIG.global_monitor_model,
-            mock=use_mock,
-            mock_response=MOCK_GLOBAL,
-            base_url=CONFIG.base_url,
-        )
-        baseline_client = get_client(
-            CONFIG.baseline_monitor_model,
-            mock=use_mock,
-            mock_response=MOCK_GLOBAL,
-            base_url=CONFIG.baseline_base_url,
-        )
-    step_monitor = StepMonitor(client=step_client)
+    # Clients are built on demand, not up front. With the in-process backend a
+    # client is a loaded model, so constructing all three eagerly puts 7B + 14B +
+    # 32B on the card at once -- about 103 GiB, which cannot fit -- even when the
+    # requested protocols only need the smallest of them.
+    cache: dict[str, SupportsComplete] = {}
+
+    def client_for(role: str) -> SupportsComplete:
+        """Return the client for a role, constructing it on first use."""
+        if role not in cache:
+            if mock == "keyword":
+                cache[role] = KeywordMockLLM()
+            else:
+                use_mock = mock == "constant"
+                model, url, response = {
+                    "step": (CONFIG.step_monitor_model, CONFIG.small_base_url, MOCK_STEP),
+                    "global": (CONFIG.global_monitor_model, CONFIG.base_url, MOCK_GLOBAL),
+                    "baseline": (
+                        CONFIG.baseline_monitor_model,
+                        CONFIG.baseline_base_url,
+                        MOCK_GLOBAL,
+                    ),
+                }[role]
+                logger.info("constructing %s client: %s", role, model)
+                cache[role] = get_client(
+                    model, mock=use_mock, mock_response=response, base_url=url
+                )
+        return cache[role]
+
+    def step_monitor_for() -> StepMonitor:
+        """Return the shared per-step monitor."""
+        return StepMonitor(client=client_for("step"))
 
     built: list[MonitoringProtocol] = []
     for name in names:
         if name == "per_step":
-            built.append(PerStepBaseline(step_monitor=step_monitor))
+            built.append(PerStepBaseline(step_monitor=step_monitor_for()))
         elif name == "scalar_posterior":
-            built.append(ScalarPosteriorBaseline(step_monitor=step_monitor))
+            built.append(ScalarPosteriorBaseline(step_monitor=step_monitor_for()))
         elif name == "running_summary":
-            built.append(RunningSummaryBaseline(client=step_client))
+            built.append(RunningSummaryBaseline(client=client_for("step")))
         elif name == "full_context":
             built.append(
                 FullContextBaseline(
-                    global_monitor=GlobalMonitor(client=baseline_client, max_fetches=0)
+                    global_monitor=GlobalMonitor(client=client_for("baseline"), max_fetches=0)
                 )
             )
         elif name == "advisory":
             built.append(
                 AdvisoryArm(
-                    step_monitor=step_monitor,
-                    global_monitor=GlobalMonitor(client=global_client),
+                    step_monitor=step_monitor_for(),
+                    global_monitor=GlobalMonitor(client=client_for("global")),
                 )
             )
         elif name == "cascade":
             built.append(
                 CascadeArm(
-                    step_monitor=step_monitor,
-                    global_monitor=GlobalMonitor(client=global_client),
+                    step_monitor=step_monitor_for(),
+                    global_monitor=GlobalMonitor(client=client_for("global")),
                 )
             )
         else:
@@ -274,6 +342,7 @@ def main() -> None:
     )
 
     protocol_names = [name.strip() for name in args.protocols.split(",") if name.strip()]
+    check_local_footprint(protocol_names)
     budgets = [float(b) for b in args.budgets.split(",") if b.strip()]
     reports: list[ProtocolReport] = []
     plot_rows: list[dict[str, object]] = []
