@@ -88,10 +88,11 @@ fi
 for model in "${MODELS[@]}"; do
   echo
   echo ">> fetching $model"
-  # Each --exclude takes exactly one pattern. Passing two patterns after a single
-  # flag makes the second one a positional FILENAME, so the CLI ignores every
-  # exclude and tries to download a file literally named "original/*".
-  "${DOWNLOAD[@]}" "$model" --exclude "*.pth" --exclude "original/*" --exclude "*.gguf"
+  # No excludes: these repos are safetensors plus config and tokenizer only, with
+  # no original/, .pth or .gguf variants to skip. An --exclude here was not just
+  # unnecessary but actively broken, since a second pattern after the flag becomes
+  # a positional FILENAME and the CLI then tries to fetch it literally.
+  "${DOWNLOAD[@]}" "$model"
 done
 
 echo
