@@ -29,10 +29,12 @@ from tqdm import tqdm
 from ledgerctl.runtime import configure_logging
 from ledgerctl.trajectory import (
     FIELD_ALIASES,
+    HIDDEN_TOOLS,
     MALICIOUS_KEYS,
     SESSION_ID_KEYS,
     STEP_LIST_KEYS,
     parse_trajectory,
+    tool_basename,
 )
 
 logger = logging.getLogger("ingest")
@@ -66,23 +68,28 @@ def iter_documents(src: Path) -> Iterator[tuple[Path, dict[str, Any]]]:
 
 
 def audit_schema(documents: list[dict[str, Any]]) -> dict[str, Counter]:
-    """Report which known aliases are present in a document set.
+    """Report which known field shapes are present in a document set.
 
-    Run this before trusting a conversion: an alias with a zero count means the
-    corpus uses a name this harness does not know, and every downstream number
-    would be computed over empty fields.
+    Run this before trusting a conversion. Control Tower nests what this harness
+    needs -- a command is ``function`` plus ``arguments``, ground truth lives in
+    ``side_task_success`` and ``attack_analysis.incriminating_actions`` -- so the
+    audit checks for those structures rather than for flat field names alone.
 
     Args:
         documents: Decoded trajectory documents.
 
     Returns:
-        Mapping from logical field name to a counter over matched aliases.
+        Mapping from logical field name to a counter over what was found.
     """
     found: dict[str, Counter] = {
         "step_list": Counter(),
         "session_id": Counter(),
-        "malicious": Counter(),
-        **{name: Counter() for name in FIELD_ALIASES},
+        "malicious_flag": Counter(),
+        "attack_labels": Counter(),
+        "command": Counter(),
+        "output": Counter(),
+        "step_index": Counter(),
+        "hidden_tools": Counter(),
     }
     for document in documents:
         for key in STEP_LIST_KEYS:
@@ -95,19 +102,46 @@ def audit_schema(documents: list[dict[str, Any]]) -> dict[str, Counter]:
                 break
         for key in MALICIOUS_KEYS:
             if key in document:
-                found["malicious"][key] += 1
+                found["malicious_flag"][key] += 1
                 break
+
+        analysis = document.get("attack_analysis") or {}
+        if isinstance(analysis, dict) and analysis.get("incriminating_actions"):
+            found["attack_labels"]["attack_analysis.incriminating_actions"] += 1
+
         steps = next((document[k] for k in STEP_LIST_KEYS if k in document), [])
         if not isinstance(steps, list):
             continue
         for entry in steps:
             if not isinstance(entry, dict):
                 continue
-            for logical, aliases in FIELD_ALIASES.items():
-                for alias in aliases:
+
+            if "function" in entry:
+                function = str(entry["function"])
+                if tool_basename(function) in HIDDEN_TOOLS:
+                    found["hidden_tools"][tool_basename(function)] += 1
+                args = entry.get("arguments") or {}
+                if tool_basename(function) == "bash" and "cmd" in args:
+                    found["command"]["function+arguments[cmd]"] += 1
+                else:
+                    found["command"]["function+arguments"] += 1
+            else:
+                for alias in FIELD_ALIASES["command"]:
                     if alias in entry:
-                        found[logical][alias] += 1
+                        found["command"][alias] += 1
                         break
+
+            for alias in FIELD_ALIASES["output"]:
+                if alias in entry:
+                    found["output"][alias] += 1
+                    break
+            if "output_error" in entry:
+                found["output"]["output_error"] += 1
+            for alias in FIELD_ALIASES["step"]:
+                if alias in entry:
+                    found["step_index"][alias] += 1
+                    break
+
     return found
 
 
@@ -142,6 +176,11 @@ def main() -> None:
         raise SystemExit("--out is required unless --audit-only is given")
 
     unmatched = [name for name in ("step_list", "command", "output") if not audit[name]]
+    if audit["malicious_flag"] and not audit["attack_labels"]:
+        print(
+            "!! malicious trajectories present but no attack_analysis.incriminating_actions;\n"
+            "   attack steps cannot be labelled and the completion step is undefined."
+        )
     if unmatched:
         raise SystemExit(
             f"refusing to convert: no alias matched for {unmatched}. "
@@ -162,6 +201,7 @@ def main() -> None:
                         "steps": [
                             {
                                 "step": step.step,
+                                "source_index": step.source_index,
                                 "timestamp": step.timestamp,
                                 "command": step.command,
                                 "output": step.output,

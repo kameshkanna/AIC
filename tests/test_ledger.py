@@ -21,6 +21,7 @@ def make_step(
         session_id=session,
         step=index,
         step_id=f"{session}::s{index}",
+        source_index=index,
         timestamp="",
         command=command,
         output=output,

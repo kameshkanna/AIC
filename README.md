@@ -68,8 +68,9 @@ ct traj download --dataset LaStraj              # human-crafted attack trajector
 ct traj download -e <env> --tag baseline -n 100 # benign runs
 ```
 
-Then audit the schema before converting — `FIELD_ALIASES` in `trajectory.py` is a guess
-until this reports a match for every field:
+Then audit the schema before converting. The loader targets Control Tower's real shape
+(commands as `function` + `arguments`, labels in `attack_analysis.incriminating_actions`),
+but no actual LaStraj document has been parsed yet, so check the audit first:
 
 ```bash
 python -m scripts.ingest --src ~/.control-tower/trajectories --audit-only

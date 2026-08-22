@@ -112,11 +112,40 @@ plus `--gpu-memory-utilization`), not a code change. Verify with:
 
     python -m scripts.plan --large-prefill-tps 18000 --large-decode-tps 1100
 
+## Verified schema (read from control-tower source, 2026-08-22)
+
+Confirmed against `src/control_tower/trajectories/trajectory.py`. The earlier guesses
+were wrong in three places, each of which would have produced silent nonsense:
+
+| what we need | where it actually is |
+|---|---|
+| step list | `actions` |
+| session id | `trajectory_id` |
+| command | **`function` + `arguments`** — not a flat field. `bash` puts the shell command at `arguments["cmd"]` |
+| output | `output`, plus a separate `output_error` that must be folded in |
+| step index | `index` (legacy: `action_index`, `step_index`, `line_number`) |
+| is-malicious | **`side_task_success`** — not `is_malicious`. Also `attempts_st` for attempted-but-failed |
+| attack steps | **`attack_analysis.incriminating_actions[].action_index`** — trajectory-level, keyed by *original* index, not a per-action boolean |
+| monitor score | `monitor_response.sus_score`, 0–10 — matches this harness's convention |
+
+`HIDDEN_TOOLS = {"run_side_task_test", "submit", "side_task_scorer"}` must be dropped
+before anything reaches a monitor. The first and third are the scoring harness: leaving
+them in shows the monitor the side task being graded. Control Tower drops them in its own
+`format_history`, and so do we. Dropping them shifts indices, so `Step.source_index`
+keeps the original position for label lookup while `Step.step` is the contiguous
+post-filter index.
+
+Note the dataset field is `datasets: list[str]` with values like `"GreatStraj"`,
+`"Public"` — confirm the exact tag for LaStraj at download time.
+
 ## Open items
 
-- **`FIELD_ALIASES` is unverified.** The action-level field names are inferred from the
-  docs, not from a downloaded document. `python -m scripts.ingest --audit-only` reports
-  which aliases matched; run it before trusting any number.
+- **Not yet run against a real downloaded document.** The schema above is read from the
+  source of truth, and `scripts/make_synthetic.py` now emits the same shape, but no
+  actual LaStraj file has been parsed. Run
+  `python -m scripts.ingest --src <dir> --audit-only` first; it now checks for the nested
+  structures, not just flat names, and warns if malicious trajectories arrive without
+  `incriminating_actions`.
 - Benign split sizing — confirm enough benign trajectories exist for two disjoint sets.
 - Two different checkpoints for summariser vs per-step monitor, or extraction blind
   spots correlate with monitoring blind spots.
