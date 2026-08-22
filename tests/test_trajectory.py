@@ -53,9 +53,11 @@ def test_completion_step_must_be_in_range() -> None:
         )
 
 
-def test_malicious_requires_completion_step() -> None:
-    with pytest.raises(ValueError, match="attack_completion_step"):
-        Trajectory(session_id="s", steps=(make_step(0),), is_malicious=True)
+def test_malicious_without_completion_step_is_allowed() -> None:
+    """The public mirror ships no per-step labels, so completion may be unknown."""
+    t = Trajectory(session_id="s", steps=(make_step(0),), is_malicious=True)
+    assert t.is_malicious
+    assert t.attack_completion_step is None
 
 
 def test_prefix_is_strictly_before() -> None:
@@ -187,14 +189,17 @@ def test_malicious_uses_side_task_success() -> None:
     assert not parse_trajectory(benign).is_malicious
 
 
-def test_malicious_without_labels_fails_loudly() -> None:
+def test_malicious_without_labels_loads_with_unknown_completion() -> None:
+    """Degrades to a trajectory-level catch rather than refusing the corpus."""
     doc = {
         "trajectory_id": "r",
         "side_task_success": True,
         "actions": [{"index": 0, "function": "bash", "arguments": {"cmd": "ls"}, "output": ""}],
     }
-    with pytest.raises(ValueError, match="incriminating_actions is required"):
-        parse_trajectory(doc)
+    t = parse_trajectory(doc)
+    assert t.is_malicious
+    assert t.attack_completion_step is None
+    assert t.attack_step_ids == ()
 
 
 def test_hidden_tool_names_are_matched_by_basename() -> None:

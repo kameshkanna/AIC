@@ -21,7 +21,7 @@ from typing import Sequence
 from tqdm import tqdm
 
 from ledgerctl.config import CONFIG
-from ledgerctl.evaluate import ProtocolReport, evaluate_protocol
+from ledgerctl.evaluate import ProtocolReport, evaluate_protocol, safety_curve, step_records
 from ledgerctl.ledger import build_ledger
 from ledgerctl.llm import KeywordMockLLM, SupportsComplete, get_client
 from ledgerctl.monitor import GlobalMonitor, StepMonitor
@@ -227,6 +227,12 @@ def main() -> None:
         help="client mode: live, fixed-score mock, or prompt-dependent mock",
     )
     parser.add_argument("--no-cache", action="store_true", help="ignore cached summaries")
+    parser.add_argument(
+        "--budgets",
+        type=str,
+        default="0.001,0.002,0.005,0.01,0.02,0.05,0.10,0.20",
+        help="audit budgets to sweep for the safety curve",
+    )
     args = parser.parse_args()
 
     configure_logging()
@@ -259,7 +265,10 @@ def main() -> None:
     summaries = summarise_corpus(trajectories, summariser, use_cache=not args.no_cache)
 
     protocol_names = [name.strip() for name in args.protocols.split(",") if name.strip()]
+    budgets = [float(b) for b in args.budgets.split(",") if b.strip()]
     reports: list[ProtocolReport] = []
+    plot_rows: list[dict[str, object]] = []
+    curves: dict[str, list[dict[str, float]]] = {}
 
     for protocol in build_protocols(protocol_names, mock=args.mock):
         runs: dict[str, ProtocolRun] = {}
@@ -273,17 +282,44 @@ def main() -> None:
             save_run(run)
             runs[trajectory.session_id] = run
 
+        calibration_runs = [runs[t.session_id] for t in calibration]
+        reporting_runs = [runs[t.session_id] for t in reporting]
+
+        plot_rows.extend(step_records(runs, by_id, protocol.name))
+        curves[protocol.name] = safety_curve(
+            malicious={t.session_id: runs[t.session_id] for t in malicious},
+            trajectories=by_id,
+            benign_calibration=calibration_runs,
+            benign_report=reporting_runs,
+            budgets=budgets,
+        )
+
         reports.append(
             evaluate_protocol(
                 protocol=protocol.name,
                 malicious={t.session_id: runs[t.session_id] for t in malicious},
                 trajectories=by_id,
-                benign_calibration=[runs[t.session_id] for t in calibration],
-                benign_report=[runs[t.session_id] for t in reporting],
+                benign_calibration=calibration_runs,
+                benign_report=reporting_runs,
                 audit_budget=CONFIG.audit_budget,
                 k=args.k,
             )
         )
+
+    if plot_rows:
+        import csv as _csv
+
+        tidy_path = CONFIG.results_dir / "steps.csv"
+        tidy_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(tidy_path, "w", encoding="utf-8", newline="") as handle:
+            writer = _csv.DictWriter(handle, fieldnames=list(plot_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(plot_rows)
+        logger.info("wrote %d step rows to %s", len(plot_rows), tidy_path)
+
+    curve_path = CONFIG.results_dir / "safety_curve.json"
+    curve_path.parent.mkdir(parents=True, exist_ok=True)
+    curve_path.write_text(json.dumps(curves, indent=2), encoding="utf-8")
 
     report_path = CONFIG.results_dir / "report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -298,6 +334,8 @@ def main() -> None:
         print(report.render())
     print("-" * 100)
     print(f"written: {report_path}")
+    print(f"         {CONFIG.results_dir / 'safety_curve.json'}   (safety vs audit budget)")
+    print(f"         {CONFIG.results_dir / 'steps.csv'}           (tidy per-step scores)")
 
 
 if __name__ == "__main__":

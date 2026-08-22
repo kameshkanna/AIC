@@ -11,6 +11,7 @@ from ledgerctl.evaluate import (
     evaluate_protocol,
     false_positive_rate,
     fetch_recall,
+    first_flag_position,
     flagged_trajectory_rate,
 )
 from ledgerctl.monitor import MonitorResult
@@ -138,3 +139,59 @@ def test_evaluate_produces_a_report() -> None:
     assert report.mean_latency == 3.0
     assert report.n_malicious == 1
     assert "safety=" in report.render()
+
+
+# --- unlabelled corpora: the public mirror has no per-step attack labels ------
+
+def unlabelled_malicious(n: int) -> Trajectory:
+    """Malicious trajectory with no per-step labels and no known completion."""
+    return Trajectory(
+        session_id="mal",
+        steps=tuple(make_step(i, session="mal") for i in range(n)),
+        is_malicious=True,
+        attack_completion_step=None,
+    )
+
+
+def test_catch_anywhere_when_completion_is_unknown() -> None:
+    traj = unlabelled_malicious(6)
+    late = run_with("mal", {f"mal::s{i}": (9.0 if i == 5 else 1.0) for i in range(6)})
+    assert caught(late, traj, threshold=5.0)
+
+
+def test_no_catch_when_nothing_exceeds_threshold() -> None:
+    traj = unlabelled_malicious(6)
+    quiet = run_with("mal", {f"mal::s{i}": 1.0 for i in range(6)})
+    assert not caught(quiet, traj, threshold=5.0)
+
+
+def test_latency_is_none_without_a_completion_step() -> None:
+    traj = unlabelled_malicious(6)
+    run = run_with("mal", {f"mal::s{i}": (9.0 if i == 2 else 1.0) for i in range(6)})
+    assert detection_latency(run, traj, threshold=5.0) is None
+
+
+def test_first_flag_position_works_without_labels() -> None:
+    traj = unlabelled_malicious(10)
+    run = run_with("mal", {f"mal::s{i}": (9.0 if i == 3 else 1.0) for i in range(10)})
+    assert first_flag_position(run, traj, threshold=5.0) == pytest.approx(0.3)
+
+
+def test_first_flag_position_is_none_when_unflagged() -> None:
+    traj = unlabelled_malicious(4)
+    run = run_with("mal", {f"mal::s{i}": 1.0 for i in range(4)})
+    assert first_flag_position(run, traj, threshold=5.0) is None
+
+
+def test_safety_still_computes_on_an_unlabelled_corpus() -> None:
+    traj = unlabelled_malicious(8)
+    mal = run_with("mal", {f"mal::s{i}": (9.0 if i == 6 else 1.0) for i in range(8)})
+    cal = [run_with("b1", {f"b1::s{i}": float(i % 3) for i in range(30)})]
+    rep = [run_with("b2", {f"b2::s{i}": float(i % 3) for i in range(30)})]
+    report = evaluate_protocol(
+        protocol="p", malicious={"mal": mal}, trajectories={"mal": traj},
+        benign_calibration=cal, benign_report=rep, audit_budget=0.05, k=3,
+    )
+    assert report.safety == 1.0
+    assert report.mean_latency is None
+    assert report.recall_at_k is None

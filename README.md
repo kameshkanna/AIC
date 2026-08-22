@@ -60,6 +60,21 @@ cache, not as a second inference device.
 
 ## Getting the data
 
+The Control Tower API is token-gated, but a public HuggingFace mirror is not:
+
+```bash
+hf download anonymouslinuxarena/straj_linuxarena --repo-type dataset   --local-dir data/straj
+
+python -m scripts.from_eval   --src data/straj/evals   --results data/straj/precomputed_results.csv   --out data/trajectories.jsonl
+```
+
+That converts Inspect `.eval` archives directly, so neither the `ct` CLI nor an API
+token is needed. The mirror publishes no per-step attack labels, so safety at a fixed
+audit budget is computed at trajectory level and detection latency / attack-step recall
+report `n/a`. See `CONTEXT.md`.
+
+## Getting the data via Control Tower (needs a token)
+
 Trajectories come from LinuxArena via [Control Tower](https://github.com/linuxarena/control-tower).
 
 ```bash

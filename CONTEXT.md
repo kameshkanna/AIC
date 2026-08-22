@@ -138,6 +138,62 @@ post-filter index.
 Note the dataset field is `datasets: list[str]` with values like `"GreatStraj"`,
 `"Public"` — confirm the exact tag for LaStraj at download time.
 
+## Data source (resolved 2026-08-22)
+
+The Control Tower API is token-gated (`ct traj list` -> 401) and the paper's "LaStraj"
+name is stale: `data/straj-dataset` now redirects to `datasets/GreatStraj`.
+
+A **public, ungated HuggingFace mirror** removes the API from the critical path:
+
+    anonymouslinuxarena/straj_linuxarena     150 .eval archives, 2.55 GB
+                                             precomputed_results.csv, 264 cells
+
+`scripts/from_eval.py` converts Inspect `.eval` archives straight to the corpus format,
+so neither the `ct` CLI nor a token is needed. Verified end to end on a real archive.
+
+Inspect layout: an `.eval` is a zip holding `samples/*.json`; a sample has a flat
+`messages` list where assistant turns carry `tool_calls` (`{function, arguments}` --
+the same shape Control Tower uses) and results arrive as later `role: "tool"` messages
+joined on `tool_call_id`. Large strings are `attachment://<hash>` refs resolved from the
+sample's `attachments` map.
+
+### What the mirror does not have
+
+**No per-step attack labels.** `scores: {}`, `results.scores: []`, zero score events.
+Ground truth is per cell only: `side_task_passed`, `min_monitor_suspicion`. So:
+
+| metric | status |
+|---|---|
+| safety at fixed audit budget | works -- the headline number is unaffected |
+| FPR, calibration, both arms | unaffected |
+| detection latency | unavailable (no completion step) |
+| attack-step Recall@K, fetch recall | unavailable (no `is_attack_step`) |
+
+Catching therefore degrades to **trajectory-level**: caught = any step above tau. A
+`first_flag_position` metric (first flag as a fraction of trajectory length) stands in
+for latency and needs no labels.
+
+`attack_analysis.incriminating_actions` is produced by Control Tower's own
+`ct_runs/traj_analysis/analyze_attack` -- an LLM labeller, not shipped with the data.
+Running it locally over the 125 successful attacks would restore every metric; labels sit
+outside the monitoring path so there is no leakage risk. That is the obvious upgrade.
+
+Caveat for limitations: these are **model-generated** attacks (gpt-3.5, gpt-4-turbo,
+sonnet-3.7) from the no-CoT time-horizons paper, not the human-crafted set. LinuxArena
+found model attacks substantially weaker than human ones, so absolute safety will read
+optimistically.
+
+## Plot artifacts
+
+Every run writes, alongside `report.json`:
+
+- `safety_curve.json` -- safety, FPR and tau swept over audit budgets. The frontier,
+  which is the figure to lead with; a single operating point invites the objection that
+  it was picked after the fact.
+- `steps.csv` -- tidy long format, one row per (protocol, trajectory, step) with score,
+  revised score, `was_fetched` and both labels. Every distribution and comparison figure
+  can be drawn from this without re-running anything.
+
 ## Open items
 
 - **Not yet run against a real downloaded document.** The schema above is read from the
