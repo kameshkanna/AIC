@@ -46,6 +46,11 @@ Do not add torch or vLLM to base dependencies — they are the `gpu` extra, and 
 extra is refused on aarch64 because vLLM has no ARM wheels. Models are served by
 containers via `serve.sh`, never by a pip-installed vLLM on the GH200.
 
+## Fixtures are not the experiment
+
+`make_synthetic.py` exists to exercise the harness without a corpus. Once real data
+is available it plays no part in any run. Do not report a number computed on it.
+
 ## Mocks are fixtures, not monitors
 
 `--mock constant` gives safety 0 by construction (threshold calibrated from the same
