@@ -28,7 +28,9 @@
 #   bash serve.sh baseline
 #   bash serve.sh stop
 #   bash serve.sh status
-#   BACKEND=docker bash serve.sh sweep     # force containers
+#   BACKEND=docker bash serve.sh sweep                 # force containers
+#   UTIL_7B=0.18 UTIL_14B=0.50 bash serve.sh sweep     # tune memory fractions
+#   ENFORCE_EAGER=1 bash serve.sh sweep                # skip torch.compile
 set -euo pipefail
 
 IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:latest}"
@@ -99,12 +101,15 @@ start_local() {
     return 0
   fi
   echo ">> starting $name  ($model)  port $port  gpu-util $util  [local]"
+  local extra=()
+  [ -n "${ENFORCE_EAGER:-}" ] && extra+=(--enforce-eager)
   HF_HOME="$HF_HOME" nohup vllm serve "$model" \
     --served-model-name "$model" \
     --port "$port" \
     --enable-prefix-caching \
     --max-model-len "$MAX_LEN" \
     --gpu-memory-utilization "$util" \
+    ${extra[@]+"${extra[@]}"} \
     >"$(logfile "$name")" 2>&1 &
   echo $! > "$(pidfile "$name")"
 }
@@ -140,12 +145,22 @@ still_alive() {
   fi
 }
 
+# vLLM's traceback ends with "See root cause above", so a blind tail prints the
+# symptom and hides the cause. Surface the first real error, then the tail, then
+# say where the whole log is.
 show_tail() {
-  local name="$1"
+  local name="$1" log
   if [ "$BACKEND" = "local" ]; then
-    tail -n 40 "$(logfile "$name")" 2>/dev/null || true
+    log="$(logfile "$name")"
+    [ -f "$log" ] || return 0
+    echo "--- first errors in $log ---"
+    grep -nE "ERROR|Error:|error:|raise [A-Za-z]|CUDA|out of memory|No such|Killed" "$log" 2>/dev/null \
+      | grep -vE "See root cause|Engine core initialization failed" | head -12 || true
+    echo "--- last 30 lines ---"
+    tail -n 30 "$log" 2>/dev/null || true
+    echo "--- full log: $log ---"
   else
-    docker logs --tail 40 "$name" 2>&1 || true
+    docker logs --tail 60 "$name" 2>&1 || true
   fi
 }
 
@@ -179,9 +194,12 @@ case "${1:-}" in
     check_gpu
     [ "$BACKEND" = "docker" ] && check_docker
     require curl
-    start_model ledgerctl-7b  "Qwen/Qwen2.5-7B-Instruct"  8001 0.20
-    start_model ledgerctl-14b "Qwen/Qwen2.5-14B-Instruct" 8000 0.55
+    # Sequential, not parallel. Each engine profiles free VRAM during init, and
+    # two doing that at once race: the second claims memory the first already
+    # counted as available, and one of them dies partway through startup.
+    start_model ledgerctl-7b  "Qwen/Qwen2.5-7B-Instruct"  8001 "${UTIL_7B:-0.20}"
     wait_ready ledgerctl-7b  8001
+    start_model ledgerctl-14b "Qwen/Qwen2.5-14B-Instruct" 8000 "${UTIL_14B:-0.55}"
     wait_ready ledgerctl-14b 8000
     cat <<'MSG'
 
