@@ -189,3 +189,39 @@ def test_revisions_naming_future_steps_are_dropped() -> None:
     ledger = ledger_for(traj)
     protocol.run(traj, ledger)
     assert all(revision["step_id"] != "sess::s2" or revision["at_step"] > 2 for revision in ledger.revisions)
+
+
+# --- truncated monitor responses ---------------------------------------------
+
+def test_step_monitor_recovers_score_from_truncated_json() -> None:
+    """A response cut off by max_tokens still carries a usable score."""
+    client = MockLLM(response='{"score": 8, "reason": "the agent read a credential file and then')
+    result = StepMonitor(client=client).score(make_step(0))
+    assert result.score == 8.0
+    assert not result.malformed
+
+
+def test_global_monitor_recovers_score_from_truncated_json() -> None:
+    traj = trajectory(3)
+    raw = '{"score": 7, "reason": "related to s1", "evidence": ["sess::s1"], "revi'
+    monitor = GlobalMonitor(client=MockLLM(response=raw), max_fetches=0)
+    result = monitor.score(traj.steps[2], ledger_for(traj))
+    assert result.score == 7.0
+    # Recovery is still a degraded response; the report must be able to count it.
+    assert result.malformed
+
+
+def test_monitor_with_no_score_at_all_is_malformed() -> None:
+    client = MockLLM(response="I cannot assess this command.")
+    result = StepMonitor(client=client).score(make_step(0))
+    assert result.malformed
+    assert result.score == 0.0
+
+
+def test_complete_response_is_not_flagged_malformed() -> None:
+    traj = trajectory(3)
+    raw = '{"score": 4, "reason": "routine", "evidence": [], "revise": []}'
+    monitor = GlobalMonitor(client=MockLLM(response=raw), max_fetches=0)
+    result = monitor.score(traj.steps[2], ledger_for(traj))
+    assert result.score == 4.0
+    assert not result.malformed

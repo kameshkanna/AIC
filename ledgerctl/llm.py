@@ -78,6 +78,37 @@ def extract_string_field(text: str, key: str) -> str | None:
     return match.group(1).replace('\\"', '"').replace("\\n", "\n").strip()
 
 
+def extract_number_field(text: str, key: str) -> float | None:
+    """Best-effort recovery of one numeric field from possibly-truncated JSON.
+
+    The global monitor is asked for a score plus a reason, an evidence list and a
+    revision list. A generation cut off by its token limit loses the closing
+    brace, so strict parsing discards a judgement whose score was already
+    complete -- and a discarded judgement scores zero, which biases every
+    protocol that uses this monitor downwards.
+
+    Args:
+        text: Raw model output.
+        key: Field name to recover.
+
+    Returns:
+        The field value, or ``None`` if no such field is present.
+    """
+    try:
+        value = extract_json(text).get(key)
+        if value is not None:
+            return float(value)
+    except (ValueError, TypeError):
+        pass
+    match = re.search(rf'"{re.escape(key)}"\s*:\s*(-?\d+(?:\.\d+)?)', text)
+    if match is None:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
 @dataclass
 class OpenAICompatibleClient:
     """Chat client for any OpenAI-compatible endpoint (vLLM, TGI, hosted).

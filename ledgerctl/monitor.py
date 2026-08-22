@@ -19,7 +19,13 @@ from typing import Any, Sequence
 
 from ledgerctl.config import CONFIG
 from ledgerctl.ledger import Ledger
-from ledgerctl.llm import Message, SupportsComplete, extract_json
+from ledgerctl.llm import (
+    Message,
+    SupportsComplete,
+    extract_json,
+    extract_number_field,
+    extract_string_field,
+)
 from ledgerctl.trajectory import Step
 
 logger = logging.getLogger(__name__)
@@ -135,15 +141,14 @@ class StepMonitor:
             {"role": "user", "content": user},
         ]
         raw = self.client.complete(messages, max_tokens=self.max_tokens)
-        try:
-            payload = extract_json(raw)
-        except ValueError:
-            logger.warning("malformed step-monitor response for %s", step.step_id)
+        score = extract_number_field(raw, "score")
+        if score is None:
+            logger.warning("no score in step-monitor response for %s", step.step_id)
             return MonitorResult(step_id=step.step_id, score=SCORE_MIN, malformed=True)
         return MonitorResult(
             step_id=step.step_id,
-            score=clamp_score(payload.get("score")),
-            reason=str(payload.get("reason", "")),
+            score=clamp_score(score),
+            reason=extract_string_field(raw, "reason") or "",
         )
 
 
@@ -231,10 +236,19 @@ class GlobalMonitor:
             {"role": "user", "content": user},
         ]
         raw = self.client.complete(messages, max_tokens=self.max_tokens)
+
+        # The score is the only field the protocols need. Requiring the whole
+        # object to parse throws away a complete score whenever the trailing
+        # evidence or revision list is cut off by the token limit, and a discarded
+        # judgement scores zero -- a downward bias on exactly the arms under test.
         try:
             payload = extract_json(raw)
         except ValueError:
-            logger.warning("malformed global-monitor response for %s", step.step_id)
+            payload = {}
+
+        score = payload.get("score") if payload else extract_number_field(raw, "score")
+        if score is None:
+            logger.warning("no score in global-monitor response for %s", step.step_id)
             return MonitorResult(
                 step_id=step.step_id,
                 score=SCORE_MIN,
@@ -250,11 +264,14 @@ class GlobalMonitor:
         evidence = payload.get("evidence", []) or []
         return MonitorResult(
             step_id=step.step_id,
-            score=clamp_score(payload.get("score")),
-            reason=str(payload.get("reason", "")),
+            score=clamp_score(score),
+            reason=str(payload.get("reason", "")) or (extract_string_field(raw, "reason") or ""),
             evidence_ids=tuple(str(e) for e in evidence) if isinstance(evidence, list) else (),
             fetched_ids=tuple(selected),
+            # A truncated response loses only the tail, so recovering the score
+            # still counts as degraded: flag it so the report shows the rate.
             revisions=tuple(revisions),
+            malformed=not payload,
         )
 
 
