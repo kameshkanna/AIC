@@ -156,6 +156,28 @@ class KeywordMockLLM:
         return json.dumps(payload)
 
 
+_LOCAL_CLIENTS: dict[str, SupportsComplete] = {}
+
+
+def _local_client(model: str) -> SupportsComplete:
+    """Return a process-wide singleton local client for ``model``.
+
+    Weights are large and load slowly, so a model is loaded once and shared by
+    every component that asks for it.
+
+    Args:
+        model: Model identifier.
+
+    Returns:
+        The shared client.
+    """
+    from ledgerctl.local_backend import TransformersClient
+
+    if model not in _LOCAL_CLIENTS:
+        _LOCAL_CLIENTS[model] = TransformersClient(model_name=model)
+    return _LOCAL_CLIENTS[model]
+
+
 def get_client(
     model: str,
     mock: bool = False,
@@ -177,6 +199,8 @@ def get_client(
     """
     if mock:
         return MockLLM(response=mock_response) if mock_response else MockLLM()
+    if CONFIG.backend == "transformers":
+        return _local_client(model)
     endpoint = base_url or CONFIG.base_url
     logger.info("constructing client for %s at %s", model, endpoint)
     return OpenAICompatibleClient(model=model, base_url=endpoint)

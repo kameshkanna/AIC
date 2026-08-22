@@ -14,6 +14,7 @@ import argparse
 import json
 import logging
 import random
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 from typing import Sequence
@@ -228,6 +229,12 @@ def main() -> None:
     )
     parser.add_argument("--no-cache", action="store_true", help="ignore cached summaries")
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="trajectories scored concurrently; >1 lets the transformers backend batch",
+    )
+    parser.add_argument(
         "--budgets",
         type=str,
         default="0.001,0.002,0.005,0.01,0.02,0.05,0.10,0.20",
@@ -271,16 +278,35 @@ def main() -> None:
     curves: dict[str, list[dict[str, float]]] = {}
 
     for protocol in build_protocols(protocol_names, mock=args.mock):
-        runs: dict[str, ProtocolRun] = {}
-        for trajectory in tqdm(
-            trajectories, desc=protocol.name, unit="traj", dynamic_ncols=True
-        ):
+        def score_one(trajectory: Trajectory) -> ProtocolRun:
+            """Score one trajectory against its own private ledger."""
             ledger = build_ledger(
                 trajectory.session_id, trajectory.steps, summaries[trajectory.session_id]
             )
             run = protocol.run(trajectory, ledger)
             save_run(run)
-            runs[trajectory.session_id] = run
+            return run
+
+        runs: dict[str, ProtocolRun] = {}
+        if args.workers > 1:
+            # Trajectories are independent -- each builds its own ledger and shares
+            # no state -- so they can be scored concurrently. With the in-process
+            # backend this is what fills a generation batch; with a served endpoint
+            # it just raises request concurrency.
+            with ThreadPoolExecutor(max_workers=args.workers) as pool:
+                for trajectory, run in tqdm(
+                    zip(trajectories, pool.map(score_one, trajectories)),
+                    total=len(trajectories),
+                    desc=protocol.name,
+                    unit="traj",
+                    dynamic_ncols=True,
+                ):
+                    runs[trajectory.session_id] = run
+        else:
+            for trajectory in tqdm(
+                trajectories, desc=protocol.name, unit="traj", dynamic_ncols=True
+            ):
+                runs[trajectory.session_id] = score_one(trajectory)
 
         calibration_runs = [runs[t.session_id] for t in calibration]
         reporting_runs = [runs[t.session_id] for t in reporting]

@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov>=5.0"]
 gpu = ["vllm>=0.27.1"]  # aarch64 wheels from 0.27.1
+local = ["torch>=2.4", "transformers>=4.45", "accelerate>=0.34"]
 
 [tool.setuptools.packages.find]
 include = ["ledgerctl*"]

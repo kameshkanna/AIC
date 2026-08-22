@@ -16,6 +16,32 @@ source .venv/bin/activate
 
 `setup.sh` writes `.env` from `.env.example` on first run.
 
+### Backend: served or in-process
+
+Two options. `LEDGERCTL_BACKEND=openai` (default) talks to a vLLM server;
+`LEDGERCTL_BACKEND=transformers` loads models in the same process, with no server,
+no port and no container -- useful when vLLM's dependency surface misbehaves.
+
+```bash
+pip install -e ".[local]"          # torch + transformers + accelerate
+export LEDGERCTL_BACKEND=transformers
+python -m scripts.run --workers 16
+```
+
+`--workers` matters for the in-process backend: decode is memory-bandwidth-bound, so
+generating one prompt at a time wastes most of the card. Trajectories are independent,
+so the runner scores them concurrently and the backend coalesces whatever arrives into
+a single batch. Start around 16 and raise it until throughput stops improving. Results
+do not depend on it -- verified identical at `--workers 1` and `--workers 8`.
+
+If vLLM crashes during startup, check `flashinfer` first: it is imported for multi-GPU
+fused allreduce, is unused on a single card, and on Python 3.10 raises `TypeError` at
+import, which vLLM's `ImportError` fallback does not catch.
+
+```bash
+pip uninstall -y flashinfer-python flashinfer
+```
+
 ### Serving on GH200 (aarch64)
 
 vLLM publishes a `manylinux_2_28` aarch64 wheel from 0.27.1, so no Docker, no

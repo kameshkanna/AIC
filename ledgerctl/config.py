@@ -48,6 +48,8 @@ class Config:
     """Immutable run configuration.
 
     Attributes:
+        backend: ``openai`` for a served endpoint, ``transformers`` to load
+            models in-process with no server.
         seed: Global random seed for every stochastic component.
         data_dir: Root directory holding input trajectory corpora.
         results_dir: Root directory for ledgers, indices and evaluation output.
@@ -66,6 +68,7 @@ class Config:
             decision threshold on held-out benign trajectories.
     """
 
+    backend: str
     seed: int
     data_dir: Path
     results_dir: Path
@@ -85,6 +88,7 @@ class Config:
     def from_env(cls) -> "Config":
         """Build a configuration from the current environment."""
         return cls(
+            backend=_env_str("LEDGERCTL_BACKEND", "openai"),
             seed=_env_int("LEDGERCTL_SEED", 0),
             data_dir=Path(_env_str("LEDGERCTL_DATA_DIR", "./data")).resolve(),
             results_dir=Path(_env_str("LEDGERCTL_RESULTS_DIR", "./results")).resolve(),
