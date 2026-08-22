@@ -108,7 +108,7 @@ class Config:
             baseline_monitor_model=_env_str("LEDGERCTL_BASELINE_MONITOR_MODEL", "Qwen/Qwen2.5-32B-Instruct"),
             summary_max_tokens=_env_int("LEDGERCTL_SUMMARY_MAX_TOKENS", 192),
             max_fetches_per_step=_env_int("LEDGERCTL_MAX_FETCHES_PER_STEP", 4),
-            local_max_batch_size=_env_int("LEDGERCTL_LOCAL_MAX_BATCH", 16),
+            local_max_batch_size=_env_int("LEDGERCTL_LOCAL_MAX_BATCH", 48),
             local_max_prompt_tokens=_env_int("LEDGERCTL_LOCAL_MAX_PROMPT_TOKENS", 8192),
             audit_budget=_env_float("LEDGERCTL_AUDIT_BUDGET", 0.01),
         )

@@ -269,7 +269,9 @@ def main() -> None:
             mock_response='{"summary": "ran a command"}',
         )
     )
-    summaries = summarise_corpus(trajectories, summariser, use_cache=not args.no_cache)
+    summaries = summarise_corpus(
+        trajectories, summariser, use_cache=not args.no_cache, workers=args.workers
+    )
 
     protocol_names = [name.strip() for name in args.protocols.split(",") if name.strip()]
     budgets = [float(b) for b in args.budgets.split(",") if b.strip()]

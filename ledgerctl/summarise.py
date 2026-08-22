@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -196,28 +197,66 @@ def summarise_corpus(
     trajectories: Sequence[Trajectory],
     summariser: Summariser,
     use_cache: bool = True,
+    workers: int = 1,
 ) -> dict[str, dict[str, str]]:
     """Summarise a corpus, reusing any cached results.
+
+    Every step is summarised independently of every other, so the whole corpus is
+    one flat pool of work. Flattening across trajectory boundaries rather than
+    walking them one at a time matters for the in-process backend: it is what
+    keeps a generation batch full, and a batch of one wastes almost all of the
+    card. Causality is unaffected, since a summary never depends on another step.
 
     Args:
         trajectories: Trajectories to summarise.
         summariser: Configured summariser.
         use_cache: Whether to read and write the on-disk cache.
+        workers: Concurrent in-flight summaries.
 
     Returns:
         Mapping from session id to that trajectory's summary mapping.
     """
     out: dict[str, dict[str, str]] = {}
-    for trajectory in tqdm(
-        trajectories, desc="corpus", unit="traj", dynamic_ncols=True
-    ):
-        if use_cache:
-            cached = load_cached(trajectory.session_id)
-            if cached is not None:
-                out[trajectory.session_id] = cached
-                continue
-        summaries = summariser.summarise_trajectory(trajectory)
-        if use_cache:
-            save_cached(trajectory.session_id, summaries)
-        out[trajectory.session_id] = summaries
+    pending: list[Step] = []
+    for trajectory in trajectories:
+        cached = load_cached(trajectory.session_id) if use_cache else None
+        if cached is not None:
+            out[trajectory.session_id] = cached
+            continue
+        out[trajectory.session_id] = {}
+        pending.extend(trajectory.steps)
+
+    if not pending:
+        return out
+
+    logger.info(
+        "summarising %d steps across %d trajectories with %d workers",
+        len(pending),
+        sum(1 for v in out.values() if not v),
+        workers,
+    )
+
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(
+                tqdm(
+                    pool.map(summariser.summarise_step, pending),
+                    total=len(pending),
+                    desc="summarise",
+                    unit="step",
+                    dynamic_ncols=True,
+                )
+            )
+    else:
+        results = [
+            summariser.summarise_step(step)
+            for step in tqdm(pending, desc="summarise", unit="step", dynamic_ncols=True)
+        ]
+
+    for step, summary in zip(pending, results, strict=True):
+        out[step.session_id][step.step_id] = summary
+
+    if use_cache:
+        for session_id in {step.session_id for step in pending}:
+            save_cached(session_id, out[session_id])
     return out
