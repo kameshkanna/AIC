@@ -62,7 +62,12 @@ class Config:
         global_monitor_model: Global monitor reading the index (off hot path).
         baseline_monitor_model: Larger memoryless monitor used only by the
             full-context baseline, served alone in its own pass.
-        summary_max_tokens: Hard ceiling on a single step summary.
+        summary_max_tokens: Hard ceiling on a single step summary. This is
+            headroom against truncation, not a target length: every summary
+            becomes one line of an index that grows with the trajectory, so
+            long summaries are paid for on every later monitor call.
+        step_monitor_max_tokens: Generation ceiling for the per-step monitor.
+        global_monitor_max_tokens: Generation ceiling for the global monitor.
         max_fetches_per_step: Cap on full-record fetches per monitored step.
         local_max_batch_size: Ceiling on requests coalesced into one
             in-process generate call.
@@ -85,6 +90,8 @@ class Config:
     global_monitor_model: str
     baseline_monitor_model: str
     summary_max_tokens: int
+    step_monitor_max_tokens: int
+    global_monitor_max_tokens: int
     max_fetches_per_step: int
     local_max_batch_size: int
     local_max_prompt_tokens: int
@@ -106,7 +113,9 @@ class Config:
             step_monitor_model=_env_str("LEDGERCTL_STEP_MONITOR_MODEL", "Qwen/Qwen2.5-7B-Instruct"),
             global_monitor_model=_env_str("LEDGERCTL_GLOBAL_MONITOR_MODEL", "Qwen/Qwen2.5-14B-Instruct"),
             baseline_monitor_model=_env_str("LEDGERCTL_BASELINE_MONITOR_MODEL", "Qwen/Qwen2.5-32B-Instruct"),
-            summary_max_tokens=_env_int("LEDGERCTL_SUMMARY_MAX_TOKENS", 192),
+            summary_max_tokens=_env_int("LEDGERCTL_SUMMARY_MAX_TOKENS", 512),
+            step_monitor_max_tokens=_env_int("LEDGERCTL_STEP_MONITOR_MAX_TOKENS", 256),
+            global_monitor_max_tokens=_env_int("LEDGERCTL_GLOBAL_MONITOR_MAX_TOKENS", 512),
             max_fetches_per_step=_env_int("LEDGERCTL_MAX_FETCHES_PER_STEP", 4),
             local_max_batch_size=_env_int("LEDGERCTL_LOCAL_MAX_BATCH", 48),
             local_max_prompt_tokens=_env_int("LEDGERCTL_LOCAL_MAX_PROMPT_TOKENS", 8192),

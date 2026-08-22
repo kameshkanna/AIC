@@ -120,7 +120,7 @@ class StepMonitor:
     """
 
     client: SupportsComplete
-    max_tokens: int = 256
+    max_tokens: int = CONFIG.step_monitor_max_tokens
 
     def score(self, step: Step, advisory: str = "") -> MonitorResult:
         """Score one incoming command.
@@ -167,7 +167,7 @@ class GlobalMonitor:
 
     client: SupportsComplete
     max_fetches: int = CONFIG.max_fetches_per_step
-    max_tokens: int = 512
+    max_tokens: int = CONFIG.global_monitor_max_tokens
     index_mode: str = "read"
 
     def __post_init__(self) -> None:

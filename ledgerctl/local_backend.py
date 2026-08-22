@@ -74,7 +74,14 @@ class TransformersClient:
 
         logger.info("loading %s onto %s (%s)", self.model_name, self.device, self.dtype)
         self._torch = torch
-        self._tokenizer = AutoTokenizer.from_pretrained(self.model_name, padding_side="left")
+        # truncation_side="left" is load-bearing, not a preference. The monitor
+        # prompt is ordered [system][index<t][fetched][incoming], so the default
+        # right-truncation would discard the incoming command -- the one thing
+        # being judged -- and keep the oldest history instead. Truncating from the
+        # left drops the earliest index entries, which is the intended degradation.
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            self.model_name, padding_side="left", truncation_side="left"
+        )
         if self._tokenizer.pad_token_id is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
 
