@@ -153,11 +153,17 @@ show_tail() {
   if [ "$BACKEND" = "local" ]; then
     log="$(logfile "$name")"
     [ -f "$log" ] || return 0
-    echo "--- first errors in $log ---"
-    grep -nE "ERROR|Error:|error:|raise [A-Za-z]|CUDA|out of memory|No such|Killed" "$log" 2>/dev/null \
-      | grep -vE "See root cause|Engine core initialization failed" | head -12 || true
-    echo "--- last 30 lines ---"
-    tail -n 30 "$log" 2>/dev/null || true
+    # The exception is the LAST line of a traceback, not the first. Print the tail
+    # of the worker's error block, where the actual cause lives, before anything
+    # else -- the API-server traceback that follows is only the symptom.
+    echo "--- root cause (end of worker error block) ---"
+    grep -E "EngineCore|Worker|ERROR" "$log" 2>/dev/null \
+      | grep -vE "See root cause|Engine core initialization failed" | tail -15 || true
+    echo "--- exception lines anywhere in the log ---"
+    grep -nE "^[A-Za-z_.]*(Error|Exception|Failure)[:( ]|RuntimeError|ImportError|OSError|AssertionError|CUDA out of memory|Killed" "$log" 2>/dev/null \
+      | grep -vE "See root cause" | tail -10 || true
+    echo "--- last 20 lines ---"
+    tail -n 20 "$log" 2>/dev/null || true
     echo "--- full log: $log ---"
   else
     docker logs --tail 60 "$name" 2>&1 || true
