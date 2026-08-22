@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+from ledgerctl.config import CONFIG
 from ledgerctl.llm import Message
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,12 @@ class TransformersClient:
         model_name: Hugging Face model id.
         device: Torch device string.
         dtype: Torch dtype name used to load weights.
-        max_batch_size: Most requests coalesced into one generate call.
+        max_batch_size: Most requests coalesced into one generate call. A batch
+            that does not fit is split and retried, so this is a ceiling rather
+            than a promise.
+        max_prompt_tokens: Prompts longer than this are truncated. Without an
+            explicit bound the tokenizer falls back to the model maximum, which
+            for these models is large enough to exhaust VRAM on a single batch.
         batch_timeout_s: How long the worker waits for a batch to fill before
             running what it has. Small values favour latency, larger ones
             throughput.
@@ -55,7 +61,8 @@ class TransformersClient:
     model_name: str
     device: str = "cuda"
     dtype: str = "bfloat16"
-    max_batch_size: int = 32
+    max_batch_size: int = CONFIG.local_max_batch_size
+    max_prompt_tokens: int = CONFIG.local_max_prompt_tokens
     batch_timeout_s: float = 0.05
 
     def __post_init__(self) -> None:
@@ -175,33 +182,59 @@ class TransformersClient:
             groups.setdefault((request.max_tokens, request.temperature), []).append(request)
 
         for (max_tokens, temperature), group in groups.items():
-            prompts = [
-                self._tokenizer.apply_chat_template(
-                    r.messages, tokenize=False, add_generation_prompt=True
-                )
-                for r in group
-            ]
-            encoded = self._tokenizer(
-                prompts, return_tensors="pt", padding=True, truncation=True
-            ).to(self._model.device)
+            self._generate_group(group, max_tokens, temperature)
 
-            kwargs: dict[str, Any] = {
-                "max_new_tokens": max_tokens,
-                "pad_token_id": self._tokenizer.pad_token_id,
-            }
-            if temperature > 0.0:
-                kwargs.update(do_sample=True, temperature=temperature)
-            else:
-                kwargs.update(do_sample=False)
+    def _generate_group(self, group: list[_Request], max_tokens: int, temperature: float) -> None:
+        """Generate for one uniformly-configured group, halving on OOM.
 
+        A batch that is too large for the remaining VRAM raises rather than
+        degrading, and failing every request in it would abort a sweep hours in.
+        Splitting and retrying costs one wasted attempt and keeps the run alive.
+
+        Args:
+            group: Requests sharing generation settings.
+            max_tokens: Generation ceiling.
+            temperature: Sampling temperature.
+        """
+        prompts = [
+            self._tokenizer.apply_chat_template(
+                r.messages, tokenize=False, add_generation_prompt=True
+            )
+            for r in group
+        ]
+        encoded = self._tokenizer(
+            prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=self.max_prompt_tokens,
+        ).to(self._model.device)
+
+        kwargs: dict[str, Any] = {
+            "max_new_tokens": max_tokens,
+            "pad_token_id": self._tokenizer.pad_token_id,
+        }
+        if temperature > 0.0:
+            kwargs.update(do_sample=True, temperature=temperature)
+        else:
+            kwargs.update(do_sample=False)
+
+        try:
             with self._torch.inference_mode():
                 generated = self._model.generate(**encoded, **kwargs)
+        except self._torch.cuda.OutOfMemoryError:
+            if len(group) == 1:
+                raise
+            half = len(group) // 2
+            logger.warning("OOM at batch %d; splitting", len(group))
+            self._torch.cuda.empty_cache()
+            self._generate_group(group[:half], max_tokens, temperature)
+            self._generate_group(group[half:], max_tokens, temperature)
+            return
 
-            prompt_length = encoded["input_ids"].shape[1]
-            for request, row in zip(group, generated):
-                request.result = self._tokenizer.decode(
-                    row[prompt_length:], skip_special_tokens=True
-                )
+        prompt_length = encoded["input_ids"].shape[1]
+        for request, row in zip(group, generated, strict=True):
+            request.result = self._tokenizer.decode(row[prompt_length:], skip_special_tokens=True)
 
     def close(self) -> None:
         """Stop the background worker, finishing any in-flight batch first."""

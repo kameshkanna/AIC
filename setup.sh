@@ -72,19 +72,36 @@ python -m pip install --quiet -e ".[dev]"
 
 case "$BACKEND" in
   vllm)
+    # vLLM 0.27 needs flashinfer, and flashinfer needs Python 3.11+. On 3.10 both
+    # states fail: with flashinfer installed its module-level annotations raise
+    # TypeError, and without it the V1 sampler's unguarded import raises
+    # ModuleNotFoundError. Neither is catchable from here, so refuse up front
+    # instead of installing several GiB that cannot start.
+    if python -c "import sys; sys.exit(0 if sys.version_info < (3,11) else 1)"; then
+      cat >&2 <<MSG
+
+!! vLLM needs Python 3.11+ ; this venv is $(python -V 2>&1 | cut -d' ' -f2).
+
+   vLLM imports flashinfer unguarded in its V1 sampler, and flashinfer itself
+   does not import on 3.10. Uninstalling flashinfer does not help -- it only
+   swaps TypeError for ModuleNotFoundError.
+
+   Two ways forward:
+
+     1. Build the venv on 3.12 and keep vLLM (faster: prefix caching):
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            export PATH="\$HOME/.local/bin:\$PATH"
+            uv venv --python 3.12 .venv
+            bash setup.sh --backend=vllm
+
+     2. Skip vLLM entirely -- no server, no ports:
+            bash setup.sh --backend=local
+
+MSG
+      exit 1
+    fi
     echo ">> installing vLLM (this is large; several minutes)"
     python -m pip install --quiet vllm
-
-    # vLLM pulls in flashinfer for multi-GPU fused allreduce. It is unused on a
-    # single card, and on Python < 3.11 it raises TypeError at import time --
-    # which vLLM's ImportError fallback does not catch, so the whole engine dies
-    # during startup. Remove it rather than leaving a landmine.
-    if python -c "import sys; sys.exit(0 if sys.version_info < (3,11) else 1)"; then
-      if python -m pip show flashinfer-python >/dev/null 2>&1 || python -m pip show flashinfer >/dev/null 2>&1; then
-        echo ">> removing flashinfer (broken on $(python -V 2>&1 | cut -d' ' -f2), unused on one GPU)"
-        python -m pip uninstall -y flashinfer-python flashinfer >/dev/null 2>&1 || true
-      fi
-    fi
     ;;
   local)
     echo ">> installing torch + transformers"

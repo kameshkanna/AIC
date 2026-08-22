@@ -34,24 +34,35 @@ python -m scripts.run --protocols full_context
 Results land in `results/`: `report.json`, `safety_curve.json` (the figure to lead
 with), `steps.csv` (everything else you would plot).
 
-### If vLLM will not start
+### vLLM needs Python 3.11+
 
-Use the in-process backend instead -- no server, no port, no container:
+vLLM 0.27 imports `flashinfer` unguarded in its V1 sampler, and flashinfer does not
+import on 3.10. Both states fail there: with it installed, its module-level annotations
+raise `TypeError`; without it, the sampler raises `ModuleNotFoundError`. Uninstalling
+does not help. `setup.sh --backend=vllm` refuses on 3.10 rather than installing several
+GiB that cannot start.
+
+On 3.10, either build the venv on 3.12 and keep vLLM:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+uv venv --python 3.12 .venv
+bash setup.sh --backend=vllm
+```
+
+...or skip vLLM entirely -- no server, no port, no container:
 
 ```bash
 bash setup.sh --backend=local
-export LEDGERCTL_BACKEND=transformers
+python -m scripts.check_local               # 2-minute smoke test, do this first
 python -m scripts.run --workers 16          # --workers fills generation batches
 ```
 
-Skip `fetch_models.sh` and `serve.sh` entirely on this path; weights load on first use.
-It is slower than vLLM, mainly because there is no prefix caching, so budget more time
-or run on a subset with `--limit`.
-
-`setup.sh --backend=vllm` removes `flashinfer` on Python < 3.11. vLLM imports it for
-multi-GPU fused allreduce, it is unused on a single card, and it raises `TypeError` at
-import on 3.10 -- which vLLM's `ImportError` fallback does not catch, so the engine dies
-during startup.
+Skip `fetch_models.sh` and `serve.sh` on the local path; weights load on first use. It
+is slower than vLLM, mainly for want of prefix caching, so budget more time or use
+`--limit`. Tune with `LEDGERCTL_LOCAL_MAX_BATCH` and `LEDGERCTL_LOCAL_MAX_PROMPT_TOKENS`;
+a batch that does not fit is split and retried rather than failing the run.
 
 ## Install
 

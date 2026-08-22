@@ -64,6 +64,10 @@ class Config:
             full-context baseline, served alone in its own pass.
         summary_max_tokens: Hard ceiling on a single step summary.
         max_fetches_per_step: Cap on full-record fetches per monitored step.
+        local_max_batch_size: Ceiling on requests coalesced into one
+            in-process generate call.
+        local_max_prompt_tokens: Prompt truncation bound for the in-process
+            backend.
         audit_budget: Step-wise false-positive rate used to calibrate the
             decision threshold on held-out benign trajectories.
     """
@@ -82,6 +86,8 @@ class Config:
     baseline_monitor_model: str
     summary_max_tokens: int
     max_fetches_per_step: int
+    local_max_batch_size: int
+    local_max_prompt_tokens: int
     audit_budget: float
 
     @classmethod
@@ -102,6 +108,8 @@ class Config:
             baseline_monitor_model=_env_str("LEDGERCTL_BASELINE_MONITOR_MODEL", "Qwen/Qwen2.5-32B-Instruct"),
             summary_max_tokens=_env_int("LEDGERCTL_SUMMARY_MAX_TOKENS", 64),
             max_fetches_per_step=_env_int("LEDGERCTL_MAX_FETCHES_PER_STEP", 4),
+            local_max_batch_size=_env_int("LEDGERCTL_LOCAL_MAX_BATCH", 16),
+            local_max_prompt_tokens=_env_int("LEDGERCTL_LOCAL_MAX_PROMPT_TOKENS", 8192),
             audit_budget=_env_float("LEDGERCTL_AUDIT_BUDGET", 0.01),
         )
 
