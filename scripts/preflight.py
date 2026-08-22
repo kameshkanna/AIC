@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 from ledgerctl.config import CONFIG
 from ledgerctl.ledger import build_ledger
-from ledgerctl.llm import OpenAICompatibleClient, extract_json
+from ledgerctl.llm import get_client
 from ledgerctl.monitor import GlobalMonitor, StepMonitor
 from ledgerctl.runtime import configure_logging
 from ledgerctl.summarise import Summariser
@@ -131,6 +131,7 @@ def _probe_trajectory() -> Trajectory:
             session_id="probe",
             step=i,
             step_id=f"probe::s{i}",
+            source_index=i,
             timestamp="",
             command=command,
             output=output,
@@ -152,14 +153,17 @@ def probe_endpoint(model: str, base_url: str, label: str, trials: int) -> bool:
     Returns:
         True when every call parsed as JSON.
     """
-    print(f"\n{label}: {model} @ {base_url}")
-    client = OpenAICompatibleClient(model=model, base_url=base_url)
+    if CONFIG.backend == "transformers":
+        print(f"\n{label}: {model} (in-process, no endpoint)")
+    else:
+        print(f"\n{label}: {model} @ {base_url}")
+    client = get_client(model, base_url=base_url)
 
     try:
         start = time.perf_counter()
         client.complete([{"role": "user", "content": "Reply with the single word: ok"}], max_tokens=8)
         print(f"  reachable          yes ({time.perf_counter() - start:.2f} s)")
-    except (ConnectionError, TimeoutError, OSError) as exc:
+    except (ConnectionError, TimeoutError, OSError, RuntimeError) as exc:
         print(f"  reachable          NO -- {type(exc).__name__}: {exc}")
         return False
 

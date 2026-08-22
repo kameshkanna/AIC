@@ -278,12 +278,16 @@ def main() -> None:
     curves: dict[str, list[dict[str, float]]] = {}
 
     for protocol in build_protocols(protocol_names, mock=args.mock):
-        def score_one(trajectory: Trajectory) -> ProtocolRun:
-            """Score one trajectory against its own private ledger."""
+        def score_one(trajectory: Trajectory, _protocol: MonitoringProtocol = protocol) -> ProtocolRun:
+            """Score one trajectory against its own private ledger.
+
+            ``_protocol`` is bound as a default argument so the closure captures
+            this iteration's protocol rather than the loop variable.
+            """
             ledger = build_ledger(
                 trajectory.session_id, trajectory.steps, summaries[trajectory.session_id]
             )
-            run = protocol.run(trajectory, ledger)
+            run = _protocol.run(trajectory, ledger)
             save_run(run)
             return run
 
@@ -295,7 +299,7 @@ def main() -> None:
             # it just raises request concurrency.
             with ThreadPoolExecutor(max_workers=args.workers) as pool:
                 for trajectory, run in tqdm(
-                    zip(trajectories, pool.map(score_one, trajectories)),
+                    zip(trajectories, pool.map(score_one, trajectories), strict=True),
                     total=len(trajectories),
                     desc=protocol.name,
                     unit="traj",

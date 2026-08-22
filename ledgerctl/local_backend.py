@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
@@ -69,13 +70,21 @@ class TransformersClient:
         self._tokenizer = AutoTokenizer.from_pretrained(self.model_name, padding_side="left")
         if self._tokenizer.pad_token_id is None:
             self._tokenizer.pad_token = self._tokenizer.eos_token
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_name,
-            dtype=getattr(torch, self.dtype),
-            device_map=self.device,
-        )
+
+        # transformers renamed `torch_dtype` to `dtype` in 4.56. Supporting both
+        # keeps this working across the range the project declares.
+        torch_dtype = getattr(torch, self.dtype)
+        try:
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self.model_name, dtype=torch_dtype, device_map=self.device
+            )
+        except TypeError:
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self.model_name, torch_dtype=torch_dtype, device_map=self.device
+            )
         self._model.eval()
 
+        self._stopping = threading.Event()
         self._queue: queue.Queue[_Request | None] = queue.Queue()
         self._worker = threading.Thread(target=self._run_worker, daemon=True)
         self._worker.start()
@@ -105,25 +114,33 @@ class TransformersClient:
         return request.result
 
     def _collect_batch(self) -> list[_Request]:
-        """Block for one request, then drain up to ``max_batch_size`` more."""
+        """Block for one request, then drain up to ``max_batch_size`` more.
+
+        Returns:
+            The collected requests, or an empty list once shutdown is requested.
+        """
         first = self._queue.get()
         if first is None:
+            self._stopping.set()
             return []
+
         batch = [first]
-        deadline = threading.Event()
-        timer = threading.Timer(self.batch_timeout_s, deadline.set)
-        timer.start()
-        try:
-            while len(batch) < self.max_batch_size and not deadline.is_set():
-                try:
-                    item = self._queue.get(timeout=self.batch_timeout_s)
-                except queue.Empty:
-                    break
-                if item is None:
-                    break
-                batch.append(item)
-        finally:
-            timer.cancel()
+        deadline = time.monotonic() + self.batch_timeout_s
+        while len(batch) < self.max_batch_size:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                item = self._queue.get(timeout=remaining)
+            except queue.Empty:
+                break
+            if item is None:
+                # Remember the shutdown request instead of dropping it, or the
+                # worker would block forever on the next get and close() would
+                # sit out its join timeout.
+                self._stopping.set()
+                break
+            batch.append(item)
         return batch
 
     def _run_worker(self) -> None:
@@ -141,6 +158,8 @@ class TransformersClient:
             finally:
                 for request in batch:
                     request.done.set()
+            if self._stopping.is_set():
+                return
 
     def _generate_batch(self, batch: list[_Request]) -> None:
         """Generate for a whole batch and write each result back to its request.
@@ -185,6 +204,8 @@ class TransformersClient:
                 )
 
     def close(self) -> None:
-        """Stop the background worker."""
+        """Stop the background worker, finishing any in-flight batch first."""
         self._queue.put(None)
-        self._worker.join(timeout=30)
+        self._worker.join(timeout=60)
+        if self._worker.is_alive():
+            logger.warning("generation worker did not stop within 60s")

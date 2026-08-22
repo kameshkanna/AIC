@@ -17,7 +17,7 @@ relevant step from one that surfaced it and misjudged it.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 import numpy as np
