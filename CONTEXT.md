@@ -194,6 +194,30 @@ Every run writes, alongside `report.json`:
   revised score, `was_fetched` and both labels. Every distribution and comparison figure
   can be drawn from this without re-running anything.
 
+## External feedback (UK AISI, 2026-09-07)
+
+Oliver Makins, on the audit convention and on scope:
+
+- **Audit assumption confirmed compatible.** Their paper assumes a single flagged action
+  perfectly incriminates the agent. This harness credits a catch when any step crosses
+  tau, so the conventions match and the safety numbers are comparable on that axis.
+- **Cross-trajectory pooling carries a selection effect.** If the monitor is handed the
+  set of trajectories that make up one coordinated attack, the grouping a real defender
+  would have to discover has been assumed away. A safety case built on that cannot
+  explain how the coordinating set was identified in deployment.
+- **Two designs he considers strong:** detect within a single trajectory at a time, or
+  pool across trajectories *while the pool contains many benign ones*, so the monitor
+  must find the coordinating set rather than be given it.
+
+The current design is the first of those -- memory is `index<t` within one trajectory,
+never pooled across trajectories -- so this scope is externally endorsed rather than
+merely convenient.
+
+**Constraint on any cross-trajectory extension.** The pool must carry realistic benign
+density. This corpus is 72 malicious / 73 benign, which is far denser in attacks than any
+deployment, and pooling at that ratio would reproduce exactly the selection effect above.
+Benign-to-malicious ratio becomes an experimental parameter, not a detail.
+
 ## Open items
 
 - **Not yet run against a real downloaded document.** The schema above is read from the
