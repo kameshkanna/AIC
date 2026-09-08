@@ -40,7 +40,7 @@ bash setup.sh --backend=local        # torch + transformers, in-process, no serv
 bash setup.sh --backend=vllm         # vLLM over HTTP; needs Python 3.11+
 source .venv/bin/activate
 
-python -m pytest                     #  unit tests, no endpoint needed
+python -m pytest                     # 122 unit tests, no endpoint needed
 python -m scripts.check_local        # 2-min smoke test of the in-process backend
 python -m scripts.smoke              # ingest path on a synthetic trajectory
 python -m scripts.run --mock keyword # sweep with mock clients, no GPU

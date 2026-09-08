@@ -18,7 +18,7 @@ because they touched the same resource in order. Five conditions are compared: n
 scalar credence, compressed summary, full context, and the ledger.
 
 > **Status: experiments in progress, no results yet.** The harness runs end to end on
-> real trajectories and is covered by  tests. Numbers will be published here when the
+> real trajectories and is covered by 122 tests. Numbers will be published here when the
 > sweep completes, whatever the sign.
 
 **Scope:** memory stays within a single trajectory. Pooling across trajectories hands
@@ -30,7 +30,7 @@ the monitor the coordinating set that a real defender would have to discover —
 ```bash
 git clone https://github.com/kameshkanna/AIC.git && cd AIC
 
-bash setup.sh --backend=local        # venv, deps,  tests, memory preflight
+bash setup.sh --backend=local        # venv, deps, 122 tests, memory preflight
 source .venv/bin/activate
 export HF_HOME=/path/on/a/big/volume # model weights land here
 
