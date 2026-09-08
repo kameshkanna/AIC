@@ -7,6 +7,9 @@ name = "ledgerctl"
 version = "0.1.0"
 description = "Append-only ledger monitoring for decomposed-attack detection in AI control settings."
 requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Kamesh Kanna" }]
+readme = "README.md"
 dependencies = [
     "openai>=1.40",
     "python-dotenv>=1.0",
