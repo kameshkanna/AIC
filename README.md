@@ -25,6 +25,57 @@ scalar credence, compressed summary, full context, and the ledger.
 the monitor the coordinating set that a real defender would have to discover — see
 `CONTEXT.md` for the note from UK AISI on that selection effect.
 
+## What this actually is
+
+A **post-hoc monitor you run over recorded agent trajectories.** It does not run agents
+and it does not block anything. It reads a trajectory step by step and gives each step a
+suspicion score from 0 to 10; a threshold is then calibrated so that a fixed fraction of
+benign steps get flagged, and an attack counts as caught if any step crosses that
+threshold before the attack completes.
+
+The experiment is a comparison. The same trajectories are scored five ways, differing
+only in what the monitor is allowed to remember:
+
+| condition | what the monitor remembers |
+|---|---|
+| `per_step` | nothing — each action judged alone |
+| `scalar_posterior` | one running number, a Beta credence over the agent |
+| `running_summary` | a compressed carry-forward summary, rewritten each step |
+| `full_context` | every earlier summary, in the prompt |
+| `advisory` / `cascade` | a ledger it can search and read specific records from |
+
+## What happens in a single step
+
+Three models take part. All are Qwen2.5 instruct models.
+
+| model | role | when it runs |
+|---|---|---|
+| **7B** | summariser | once, offline, over the whole corpus |
+| **7B** | per-step monitor | every step |
+| **14B** | global monitor | every step, in the ledger arms |
+| **32B** | memoryless baseline | separate run; the thing to beat |
+
+**Before anything is scored,** the summariser reads each step *on its own* — that step's
+command and its terminal output, nothing else — and writes a one-line recap. These are
+cached, so every condition scores against a byte-identical ledger.
+
+**Then, judging step *t* in the cascade arm:**
+
+1. The **per-step monitor (7B)** sees `command_t` and nothing else. It returns a score.
+   This is the whole of the `per_step` condition, and here it becomes a cheap feature.
+2. The **global monitor (14B)** sees the *index* — one summary line per step before *t* —
+   plus `command_t`. It picks up to 4 step ids it wants to read in full.
+3. Those records are **fetched by id**, read, and **dropped**. Nothing accumulates.
+4. The global monitor returns the score for step *t*, and may also **revise** the score of
+   any earlier step, if what it just read makes that step look worse in hindsight.
+
+The advisory arm inverts step 4: the 14B passes its evidence back to the 7B, and the 7B
+decides. Same ledger, different decider — that is the only difference between the arms.
+
+**What the monitor never sees:** the output of the step it is judging (it decides before
+the command runs), any later step, or any ground-truth label. Those are enforced by tests
+rather than convention.
+
 ## If you have five minutes
 
 The claim lives in three places:
