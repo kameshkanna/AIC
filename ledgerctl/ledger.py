@@ -20,7 +20,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from ledgerctl.trajectory import Step
 
@@ -253,3 +253,79 @@ def build_ledger(session_id: str, steps: Iterable[Step], summaries: dict[str, st
     for step in steps:
         ledger.append(step, summaries.get(step.step_id, ""))
     return ledger
+
+
+@dataclass
+class LiveLedger(Ledger):
+    """A ledger that summarises a step only once a later step asks for it.
+
+    The batch path summarises the whole corpus first, then scores. That is
+    *argued* to be causal -- a summary depends on exactly one step, so it cannot
+    observe a later one -- but the argument has to be checked by reading the code,
+    and a reviewer is entitled to want the guarantee structurally instead.
+
+    Here nothing is precomputed. A summary for step *t* comes into existence only
+    when some monitor requests the index up to a point strictly after *t*, so no
+    model call can be influenced by information that did not exist yet, by
+    construction rather than by inspection. That also makes this path usable as a
+    live monitor: the same loop runs against an agent in progress, because it
+    never needs a step that has not happened.
+
+    It is slower -- summaries cannot be batched across trajectories -- so the
+    batch path remains the default for sweeps.
+
+    Attributes:
+        steps: The trajectory's steps, in execution order.
+        summarise: Callable producing one summary from one step.
+        materialised: How many steps have been summarised so far.
+    """
+
+    steps: tuple[Step, ...] = ()
+    summarise: Callable[[Step], str] | None = None
+    materialised: int = 0
+
+    def _advance_to(self, upto: int | None) -> None:
+        """Summarise every step strictly before ``upto`` that is not yet recorded.
+
+        Args:
+            upto: Exclusive step bound. ``None`` means the whole trajectory, which
+                is only correct once it has finished.
+        """
+        if self.summarise is None:
+            raise ValueError("LiveLedger needs a summarise callable")
+        limit = len(self.steps) if upto is None else min(upto, len(self.steps))
+        while self.materialised < limit:
+            step = self.steps[self.materialised]
+            self.append(step, self.summarise(step))
+            self.materialised += 1
+
+    def render_index(self, upto: int | None = None) -> str:
+        """Render the index, summarising any steps it needs first."""
+        self._advance_to(upto)
+        return super().render_index(upto)
+
+    def grep_index(self, pattern: str, upto: int | None = None) -> list[IndexEntry]:
+        """Search the index, summarising any steps it needs first."""
+        self._advance_to(upto)
+        return super().grep_index(pattern, upto)
+
+    def fetch(self, step_ids: Sequence[str], upto: int | None = None) -> list[dict[str, Any]]:
+        """Fetch records, summarising any steps it needs first."""
+        self._advance_to(upto)
+        return super().fetch(step_ids, upto)
+
+
+def build_live_ledger(
+    session_id: str, steps: Iterable[Step], summarise: Callable[[Step], str]
+) -> LiveLedger:
+    """Build a ledger that summarises incrementally as monitors read it.
+
+    Args:
+        session_id: Trajectory id.
+        steps: Steps in execution order.
+        summarise: Callable producing one summary from one step.
+
+    Returns:
+        An empty ledger that fills itself on demand.
+    """
+    return LiveLedger(session_id=session_id, steps=tuple(steps), summarise=summarise)

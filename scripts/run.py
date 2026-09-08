@@ -23,7 +23,7 @@ from tqdm import tqdm
 
 from ledgerctl.config import CONFIG
 from ledgerctl.evaluate import ProtocolReport, evaluate_protocol, safety_curve, step_records
-from ledgerctl.ledger import build_ledger
+from ledgerctl.ledger import build_ledger, build_live_ledger
 from ledgerctl.llm import KeywordMockLLM, SupportsComplete, get_client
 from ledgerctl.monitor import GlobalMonitor, StepMonitor
 from ledgerctl.protocols import (
@@ -297,6 +297,16 @@ def main() -> None:
     )
     parser.add_argument("--no-cache", action="store_true", help="ignore cached summaries")
     parser.add_argument(
+        "--mode",
+        choices=("batch", "live"),
+        default="batch",
+        help=(
+            "batch summarises the corpus up front, then scores; live summarises a step "
+            "only once a later step asks for it, so no model call can be reached by "
+            "information that did not exist yet -- by construction rather than by argument"
+        ),
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -337,9 +347,17 @@ def main() -> None:
             mock_response='{"summary": "ran a command"}',
         )
     )
-    summaries = summarise_corpus(
-        trajectories, summariser, use_cache=not args.no_cache, workers=args.workers
-    )
+    if args.mode == "live":
+        # Nothing is summarised up front. Each trajectory's ledger fills itself as
+        # monitors read it, so a summary for step t cannot exist before some monitor
+        # asks for the index past t. Slower -- summaries cannot be batched across
+        # trajectories -- but it is the same loop a live monitor would run.
+        logger.info("live mode: summarising incrementally, no corpus pre-pass")
+        summaries: dict[str, dict[str, str]] = {}
+    else:
+        summaries = summarise_corpus(
+            trajectories, summariser, use_cache=not args.no_cache, workers=args.workers
+        )
 
     protocol_names = [name.strip() for name in args.protocols.split(",") if name.strip()]
     check_local_footprint(protocol_names)
@@ -355,9 +373,14 @@ def main() -> None:
             ``_protocol`` is bound as a default argument so the closure captures
             this iteration's protocol rather than the loop variable.
             """
-            ledger = build_ledger(
-                trajectory.session_id, trajectory.steps, summaries[trajectory.session_id]
-            )
+            if args.mode == "live":
+                ledger = build_live_ledger(
+                    trajectory.session_id, trajectory.steps, summariser.summarise_step
+                )
+            else:
+                ledger = build_ledger(
+                    trajectory.session_id, trajectory.steps, summaries[trajectory.session_id]
+                )
             run = _protocol.run(trajectory, ledger)
             save_run(run)
             return run

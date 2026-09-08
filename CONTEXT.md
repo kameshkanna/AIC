@@ -219,6 +219,29 @@ mirror case where the same revision issued in time is a legitimate win.
 This bug would have inflated safety specifically for the ledger arms -- the only
 conditions that issue revisions -- so it would have exaggerated the effect under test.
 
+## External feedback (Redwood Research, 2026-09-08) — Miguel Brandão
+
+**Live mode.** The batch path summarises the corpus first, then scores. That is causal --
+a summary depends on exactly one step and cannot observe a later one -- but it is an
+*argument*, checkable only by reading the code. He asked for a path where it is a
+*guarantee by construction*, which is a different and stronger thing for a safety case,
+and which also makes the harness usable as a live blue protocol rather than a post-hoc
+analysis.
+
+`LiveLedger` writes a summary for step *t* only when a monitor requests the index past
+*t*. Nothing is precomputed, so no model call can be reached by information that did not
+exist yet. `--mode live` selects it. Verified to produce identical numbers to the batch
+path; slower, because summaries cannot be batched across trajectories, so batch stays the
+default for sweeps.
+
+Tests in `tests/test_ledger.py` pin the property directly, including that the step being
+judged is never summarised before it is judged.
+
+**Documentation.** Describe the exact inputs in prose rather than naming variables. The
+single-step walkthrough is rewritten accordingly -- "the tool call about to run, and
+nothing more, not its output, since the decision precedes execution" rather than
+`command_t` and `index<t`.
+
 ## Open items
 
 - **Not yet run against a real downloaded document.** The schema above is read from the

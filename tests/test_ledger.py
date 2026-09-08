@@ -95,3 +95,65 @@ def test_save_load_roundtrip(tmp_path: Path) -> None:
     reloaded = Ledger.load(ledger.save(tmp_path))
     assert reloaded.render_index() == ledger.render_index()
     assert reloaded.revisions == ledger.revisions
+
+
+# --- live mode: causality by construction rather than by argument -------------
+#
+# Suggested by Miguel Brandao (Redwood Research). The batch path is causal because
+# a summary depends on exactly one step, but that has to be verified by reading the
+# code. These pin the stronger property: a summary for step t cannot exist until a
+# monitor asks for the index past t.
+
+def live_ledger_recording_calls() -> tuple[Ledger, list[int]]:
+    """A live ledger over ten steps, recording which steps get summarised."""
+    from ledgerctl.ledger import build_live_ledger
+
+    calls: list[int] = []
+
+    def summarise(step: Step) -> str:
+        calls.append(step.step)
+        return f"sum{step.step}"
+
+    return build_live_ledger("sess", [make_step(i) for i in range(10)], summarise), calls
+
+
+def test_nothing_is_summarised_before_anything_is_read() -> None:
+    _, calls = live_ledger_recording_calls()
+    assert calls == []
+
+
+def test_reading_the_index_summarises_only_earlier_steps() -> None:
+    ledger, calls = live_ledger_recording_calls()
+    ledger.render_index(upto=3)
+    assert calls == [0, 1, 2]
+
+
+def test_a_later_read_extends_without_redoing_work() -> None:
+    ledger, calls = live_ledger_recording_calls()
+    ledger.render_index(upto=3)
+    ledger.render_index(upto=6)
+    assert calls == [0, 1, 2, 3, 4, 5]
+
+
+def test_fetch_and_grep_also_respect_the_boundary() -> None:
+    ledger, calls = live_ledger_recording_calls()
+    ledger.fetch(["sess::s1"], upto=2)
+    assert max(calls) < 2
+    ledger.grep_index("sum", upto=4)
+    assert max(calls) < 4
+
+
+def test_the_step_being_judged_is_never_summarised_first() -> None:
+    """The whole point: judging step t must not require step t to exist yet."""
+    ledger, calls = live_ledger_recording_calls()
+    for t in range(10):
+        ledger.render_index(upto=t)
+        assert t not in calls, f"step {t} was summarised before it was judged"
+
+
+def test_live_ledger_needs_a_summariser() -> None:
+    from ledgerctl.ledger import LiveLedger
+
+    ledger = LiveLedger(session_id="sess", steps=(make_step(0),))
+    with pytest.raises(ValueError, match="summarise callable"):
+        ledger.render_index(upto=1)

@@ -113,35 +113,45 @@ publishing on its own.
 
 ## What happens in a single step
 
-Three models take part. All are Qwen2.5 instruct models.
+Four models take part, all Qwen2.5 instruct.
 
-| model | role | when it runs |
-|---|---|---|
-| **7B** | summariser | once, offline, over the whole corpus |
-| **7B** | per-step monitor | every step |
-| **14B** | global monitor | every step, in the ledger arms |
-| **32B** | memoryless baseline | separate run; the thing to beat |
+| model | role |
+|---|---|
+| **7B** | writes the one-line recap of each step |
+| **7B** | the per-step monitor |
+| **14B** | the global monitor, in the ledger conditions |
+| **32B** | the memoryless baseline, run separately |
 
-**Before anything is scored,** the summariser reads each step *on its own* — that step's
-command and its terminal output, nothing else — and writes a one-line recap. These are
-cached, so every condition scores against a byte-identical ledger.
+**The recap.** Each step is summarised on its own — that step's tool call and its
+terminal output, nothing else. No trajectory context, no labels, no later step.
 
-**Then, judging step *t* in the cascade arm:**
+**Judging one step.** The per-step monitor is shown the tool call about to run, and
+nothing more — not its output, since the decision precedes execution.
 
-1. The **per-step monitor (7B)** sees `command_t` and nothing else. It returns a score.
-   This is the whole of the `per_step` condition, and here it becomes a cheap feature.
-2. The **global monitor (14B)** sees the *index* — one summary line per step before *t* —
-   plus `command_t`. It picks up to 4 step ids it wants to read in full.
-3. Those records are **fetched by id**, read, and **dropped**. Nothing accumulates.
-4. The global monitor returns the score for step *t*, and may also **revise** the score of
-   any earlier step, if what it just read makes that step look worse in hindsight.
+The global monitor is shown one recap line for every step that already finished, plus
+the same tool call. It names up to four of those steps it wants to read in full. Those
+records are handed over, read, and discarded; nothing accumulates between steps. It then
+returns a suspicion score for the incoming call, and may raise the score of any earlier
+step whose meaning has changed in light of what it just read.
 
-The advisory arm inverts step 4: the 14B passes its evidence back to the 7B, and the 7B
-decides. Same ledger, different decider — that is the only difference between the arms.
+The two ledger conditions differ only in who makes the final call: in `cascade` the
+global monitor decides and the per-step score is a cheap feature; in `advisory` the
+global monitor hands its evidence back and the per-step monitor decides.
 
-**What the monitor never sees:** the output of the step it is judging (it decides before
-the command runs), any later step, or any ground-truth label. Those are enforced by tests
-rather than convention.
+**What no monitor ever sees:** the result of the call it is judging, any later step, or
+any ground-truth label. These are enforced by tests, not convention.
+
+### Live mode
+
+By default the recaps are written for the whole corpus first, then scoring runs. That is
+causal — a recap depends on exactly one step — but you have to read the code to confirm
+it.
+
+`--mode live` writes a recap only when a monitor asks for the history past that point, so
+no model call can be reached by information that did not exist yet, by construction
+rather than by argument. It is slower, since recaps cannot be batched across
+trajectories, and it is the same loop a live monitor would run against an agent in
+progress.
 
 ## If you have five minutes
 
