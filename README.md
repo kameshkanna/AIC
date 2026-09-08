@@ -25,6 +25,26 @@ scalar credence, compressed summary, full context, and the ledger.
 the monitor the coordinating set that a real defender would have to discover — see
 `CONTEXT.md` for the note from UK AISI on that selection effect.
 
+## If you have five minutes
+
+The claim lives in three places:
+
+| file | what to look at |
+|---|---|
+| `ledgerctl/ledger.py` | the memory itself — append-only, fetch by id, access log, `revise` for retroactive re-scoring |
+| `ledgerctl/protocols.py` | the five memory conditions side by side; the comparison is the experiment |
+| `ledgerctl/evaluate.py` | τ calibrated on a held-out benign split, catch defined strictly before completion |
+
+The invariants that would silently invalidate results are enforced as tests, not
+comments — `tests/test_summarise.py` pins that the summariser sees one step and no
+labels, `tests/test_ledger.py` pins the causal mask, `tests/test_evaluate.py` pins the
+disjoint calibration splits.
+
+```bash
+python -m pytest                      # 122 tests, no GPU or endpoint needed
+python -m scripts.run --mock keyword  # whole pipeline on mock clients
+```
+
 ## Quickstart, from nothing
 
 ```bash
